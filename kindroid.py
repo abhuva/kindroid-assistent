@@ -137,37 +137,14 @@ def send_message_to_kindroid(api_key, ai_id, message, call_description="Kindroid
 
         if response.status_code == 200:
             print(f"{call_description} message sent successfully. Received response.")
-            try:
-                response_data = response.json()
-                # --- IMPORTANT: Adjust this based on Kindroid's actual response structure ---
-                kindroid_reply = response_data.get('message')
-                # --- End Adjustment Section ---
-
-                if kindroid_reply is not None:
-                    print(f"  Received Text (first 100 chars): {kindroid_reply[:100]}{'...' if len(kindroid_reply) > 100 else ''}") # Log response start
-                    return kindroid_reply
-                else:
-                    print(f"Error: Could not find 'message' key in {call_description} JSON response.")
-                    print(f"Raw {call_description} response JSON: {json.dumps(response_data, indent=2)}")
-                    return None # Indicate failure to extract message
-            except json.JSONDecodeError:
-                # If response isn't JSON, maybe the raw text is the reply?
-                print(f"Warning: {call_description} response was not valid JSON. Returning raw text.")
-                raw_text = response.text
-                print(f"  Received Text (first 100 chars): {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}") # Log response start
-                return raw_text
-            except Exception as e:
-                print(f"Error parsing {call_description} response: {e}")
-                print(f"Raw {call_description} response: {response.text}")
-                return None
+            # Kindroid always returns raw text, not JSON
+            raw_text = response.text
+            print(f"  Received Text (first 100 chars): {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}") # Log response start
+            return raw_text
         else:
             print(f"\nError from {call_description} API:")
             print(f"Status Code: {response.status_code}")
-            try:
-                error_details = response.json()
-                print(f"Response Body: {json.dumps(error_details, indent=2)}")
-            except json.JSONDecodeError:
-                print(f"Response Body: {response.text}")
+            print(f"Response Body: {response.text}")
             return None
     except requests.exceptions.Timeout:
         print(f"\nError: Request to {call_description} API timed out.")

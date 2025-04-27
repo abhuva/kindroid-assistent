@@ -1,0 +1,9 @@
+# Kindroid Configuration Settings
+
+# Limits for Gemini Response
+gemini:
+  max_output_tokens: 1000
+  max_response_chars: 3500
+
+# Run Interval (in minutes)
+run_interval_minutes: 90  # Example: 3 hours = 180 minutes 

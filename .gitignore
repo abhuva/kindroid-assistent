@@ -1,6 +1,10 @@
 # Environment variables with API keys
 kindroid.env
 
+# Log files
+log.txt
+*.log
+
 # Python
 __pycache__/
 *.py[cod]

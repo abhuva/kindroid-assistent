@@ -29,32 +29,32 @@ Available Filesystem Operations:
    - Purpose: Read contents of a file
    - Input: path (string)
    - Returns: file contents as string
-   - Example: {"tool": "read_file", "params": {"path": "config/config.yaml"}}
+   - Example: {"type": "request", "id": "1", "tool": "read_file", "path": "config/config.yaml"}
 
 2. write_file
    - Purpose: Create or overwrite a file
    - Input: path (string), content (string)
    - Returns: success status
-   - Example: {"tool": "write_file", "params": {"path": "data/note.txt", "content": "Hello, World!"}}
+   - Example: {"type": "request", "id": "2", "tool": "write_file", "path": "data/note.txt", "content": "Hello, World!"}
    - WARNING: Use with caution as it can overwrite existing files
 
 3. list_directory
    - Purpose: List contents of a directory
    - Input: path (string)
    - Returns: list of files and directories
-   - Example: {"tool": "list_directory", "params": {"path": "data"}}
+   - Example: {"type": "request", "id": "3", "tool": "list_directory", "path": "data"}
 
 4. search_files
    - Purpose: Search for files matching a pattern
    - Input: path (string), pattern (string)
    - Returns: list of matching file paths
-   - Example: {"tool": "search_files", "params": {"path": "data", "pattern": "*.txt"}}
+   - Example: {"type": "request", "id": "4", "tool": "search_files", "path": "data", "pattern": "*.txt"}
 
 5. get_file_info
    - Purpose: Get file metadata
    - Input: path (string)
    - Returns: file size, creation time, modified time, etc.
-   - Example: {"tool": "get_file_info", "params": {"path": "data/note.txt"}}
+   - Example: {"type": "request", "id": "5", "tool": "get_file_info", "path": "data/note.txt"}
 
 Guidelines:
 1. Always verify paths are within allowed directories

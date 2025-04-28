@@ -1,33 +1,38 @@
 import os
 import sys
+import json
+import time
+import logging
+import subprocess
+import requests
+import threading
+import yaml
+import schedule
+from dotenv import load_dotenv
+from datetime import datetime
+import socket
+import atexit
+import select
+import queue
+import errno
 
 # Add external directory to Python path
 external_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "external", "servers", "src", "filesystem")
 sys.path.append(external_dir)
 
-import requests
-import json
-from dotenv import load_dotenv
-import schedule
-import time
-import yaml
-import logging
-from datetime import datetime
 from mcp_client import MCPClient
-import subprocess
-import socket
-import atexit
+from mcp_server import MCPServer
 
 # --- Logging Configuration ---
 LOG_FILENAME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.txt")
 
 # Configure logging to write to both console and file
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(message)s',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler(LOG_FILENAME, mode='a', encoding='utf-8'),
+        logging.FileHandler(LOG_FILENAME, mode='w', encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -118,14 +123,19 @@ KINDROID_BASE_URL = "https://api.kindroid.ai/v1"
 KINDROID_ENDPOINT = "/send-message"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-def is_server_running(url):
-    """Check if the MCP server is running by attempting to connect to it."""
-    # Since the server is running on stdio, we'll consider it running if the process is alive
-    try:
-        response = requests.get(url, timeout=5)
-        return response.status_code == 200
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+def is_server_running(process):
+    """Check if the MCP server is running by checking if the process is alive."""
+    if process is None:
+        logger.warning("Server process is None")
         return False
+    
+    # Check if the process is still running
+    if process.poll() is not None:
+        logger.warning(f"Server process has terminated with exit code {process.poll()}")
+        return False
+    
+    logger.info("Server process is running")
+    return True
 
 def find_npx():
     """Find the NPX executable on the system"""
@@ -147,13 +157,8 @@ def find_npx():
 
 def start_mcp_server(config):
     """Start the MCP filesystem server if it's not already running."""
-    server_config = config['mcp_servers']['filesystem']
-    server_url = server_config['server_url']
+    server_config = config.get('mcp_servers', {}).get('filesystem', {})
     
-    if is_server_running(server_url):
-        logger.info("MCP filesystem server is already running.")
-        return True
-        
     logger.info("Starting MCP filesystem server...")
     
     try:
@@ -167,7 +172,7 @@ def start_mcp_server(config):
             
         # Get all allowed directories from config
         allowed_dirs = []
-        for dir_path in server_config['allowed_directories']:
+        for dir_path in server_config.get('allowed_directories', []):
             # Replace ${workspaceFolder} with actual workspace path
             abs_path = os.path.abspath(dir_path.replace("${workspaceFolder}", os.getcwd()))
             allowed_dirs.append(abs_path)
@@ -187,26 +192,42 @@ def start_mcp_server(config):
         # Log the command for debugging
         logger.info(f"Running command: {' '.join(cmd)}")
         
-        # Start the server process with output capture
+        # Set up environment with UTF-8 encoding
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        if os.name == 'nt':  # Windows
+            env['PYTHONLEGACYWINDOWSSTDIO'] = '0'
+        
+        # Start the server process with pipe communication
         process = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW  # Hide console window on Windows
+            text=True,  # Use text mode consistently
+            bufsize=1,  # Line buffered
+            env=env,
+            cwd=os.getcwd()  # Explicitly set working directory
         )
         
         # Function to read process output
         def read_output(pipe, prefix):
             while True:
-                line = pipe.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    logger.info(f"{prefix}: {line.strip()}")
+                try:
+                    line = pipe.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        line = line.strip()
+                        if line:
+                            logger.info(f"{prefix}: {line}")
+                except Exception as e:
+                    logger.error(f"Error reading {prefix}: {e}")
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.1)
         
         # Start output reading threads
-        import threading
         stdout_thread = threading.Thread(target=read_output, args=(process.stdout, "NPX"))
         stderr_thread = threading.Thread(target=read_output, args=(process.stderr, "NPX Error"))
         stdout_thread.daemon = True
@@ -214,29 +235,29 @@ def start_mcp_server(config):
         stdout_thread.start()
         stderr_thread.start()
         
-        # Wait a bit for NPX to start downloading and installing the package
-        logger.info("Waiting for NPX to initialize...")
-        time.sleep(5)
+        # Wait for NPX to start downloading and installing the package
+        logger.info("Waiting for NPX to initialize (15 seconds)...")
+        time.sleep(15)
         
         # Check if process is still running
         if process.poll() is not None:
             logger.error("NPX process terminated unexpectedly")
             return False
         
-        # Wait for the server to start (up to 30 seconds)
-        logger.info("Waiting for server to start...")
-        for i in range(30):
-            if is_server_running(server_url):
+        # Wait for the server to start (up to 60 seconds)
+        logger.info("Waiting for server to start (up to 60 seconds)...")
+        for i in range(60):
+            if is_server_running(process):
                 logger.info("MCP filesystem server started successfully.")
                 return True
             if process.poll() is not None:
                 logger.error("NPX process terminated unexpectedly while waiting for server")
                 return False
-            logger.info(f"Waiting for server... ({i+1}/30)")
+            logger.info(f"Waiting for server... ({i+1}/60)")
             time.sleep(1)
             
         # If we get here, the server didn't start
-        logger.error("Failed to start MCP filesystem server: timeout")
+        logger.error("Failed to start MCP filesystem server: timeout after 60 seconds")
         process.terminate()  # Kill the process
         return False
         
@@ -271,106 +292,73 @@ atexit.register(stop_mcp_server)
 class MCPManager:
     def __init__(self, config):
         self.config = config
-        self.server_process = None
-        self.client = None
-        self._initialize_server()
-    
-    def _initialize_server(self):
-        """Initialize the MCP filesystem server and client"""
-        try:
-            # Find NPX executable
-            npx_path = find_npx()
-            if not npx_path:
-                logger.error("Could not find NPX executable. Please ensure Node.js is installed.")
-                return
-                
-            logger.info(f"Found NPX at: {npx_path}")
-                
-            # Get allowed directories from config
-            server_config = self.config['mcp_servers']['filesystem']
-            allowed_dirs = []
-            for dir_path in server_config['allowed_directories']:
-                # Replace ${workspaceFolder} with actual workspace path
-                abs_path = os.path.abspath(dir_path.replace("${workspaceFolder}", os.getcwd()))
-                allowed_dirs.append(abs_path)
-                # Create directory if it doesn't exist
-                os.makedirs(abs_path, exist_ok=True)
+        
+        # Get server configuration
+        server_config = config.get('mcp_servers', {}).get('filesystem', {})
+        allowed_dirs = server_config.get('allowed_directories', [])
+        
+        # Process allowed directories
+        processed_dirs = []
+        for dir_path in allowed_dirs:
+            # Replace ${workspaceFolder} with actual workspace path
+            abs_path = os.path.abspath(dir_path.replace("${workspaceFolder}", os.getcwd()))
+            processed_dirs.append(abs_path)
+            # Create directory if it doesn't exist
+            os.makedirs(abs_path, exist_ok=True)
             
-            # Build NPX command
-            cmd = [
-                npx_path,
-                "-y",
-                "@modelcontextprotocol/server-filesystem"
-            ]
+        # If no directories configured, use current directory
+        if not processed_dirs:
+            processed_dirs = [os.getcwd()]
             
-            # Add allowed directories
-            cmd.extend(allowed_dirs)
-            
-            # Log the command for debugging
-            logger.info(f"Running command: {' '.join(cmd)}")
-            
-            # Start the server process with pipe communication
-            self.server_process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1  # Line buffered
-            )
-            
-            # Give the server a moment to start
-            logger.info("Waiting for server to initialize...")
-            time.sleep(2)
-            
-            # Check if process is still running
-            if self.server_process.poll() is not None:
-                logger.error("Server process terminated unexpectedly")
-                return
-            
-            # Initialize the client with the process
-            self.client = MCPClient(self.server_process)
-            
-            # Test the connection with a simple list_directory operation
-            logger.info("Testing server connection...")
-            test_result = self.execute_tool('filesystem', 'list_directory', {'path': '.'})
-            if test_result:
-                logger.info("MCP server connection test successful")
-            else:
-                logger.error("MCP server connection test failed")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize MCP server: {e}")
-            if self.server_process:
-                self.server_process.terminate()
-            self.server_process = None
-            self.client = None
-    
-    def execute_tool(self, server_name, tool_name, params):
-        """Execute a tool using the MCP client"""
-        if server_name != 'filesystem' or not self.client:
-            logger.error(f"MCP server {server_name} not available")
-            return None
-            
-        try:
-            result = self.client.execute_tool(tool_name, params)
-            logger.info(f"Executed {tool_name} on {server_name}")
-            return result
-        except Exception as e:
-            logger.error(f"Error executing {tool_name} on {server_name}: {e}")
-            return None
-    
-    def __del__(self):
-        """Cleanup when the manager is destroyed"""
-        if self.server_process:
+        logger.info(f"Initializing MCP server with directories: {processed_dirs}")
+        
+        # Create server instance with processed directories
+        self.server = MCPServer(processed_dirs)
+        
+        # Try to start the server with retries
+        max_retries = 3
+        for i in range(max_retries):
             try:
-                self.server_process.terminate()
-            except:
-                pass
-            self.server_process = None
+                if self.server.start():
+                    logger.info("MCP server started successfully")
+                    return
+                logger.warning(f"Failed to start server, attempt {i+1} of {max_retries}")
+                time.sleep(5)  # Wait before retry
+            except Exception as e:
+                logger.error(f"Error starting server (attempt {i+1}): {e}")
+                if i < max_retries - 1:  # Don't sleep on last attempt
+                    time.sleep(5)
+                    
+        raise Exception("Failed to start MCP server after multiple attempts")
+            
+    def execute_tool(self, tool_name, params):
+        """Execute a tool through the server"""
+        try:
+            return self.server.execute_tool(tool_name, params)
+        except Exception as e:
+            logger.error(f"Error executing tool {tool_name}: {e}")
+            # Try to restart server on failure
+            try:
+                logger.info("Attempting to restart server...")
+                self.server.stop()
+                if self.server.start():
+                    logger.info("Server restarted, retrying tool execution")
+                    return self.server.execute_tool(tool_name, params)
+            except Exception as restart_error:
+                logger.error(f"Failed to restart server: {restart_error}")
+            return None
+        
+    def __del__(self):
+        """Cleanup when manager is destroyed"""
+        if hasattr(self, 'server'):
+            self.server.stop()
 
 # Initialize MCP Manager
-mcp_manager = MCPManager(config)
+try:
+    mcp_manager = MCPManager(config)
+except Exception as e:
+    logger.error(f"Failed to initialize MCP Manager: {e}")
+    mcp_manager = None
 
 def read_prompt_file(filename):
     """Reads the content of the specified file."""
@@ -527,30 +515,36 @@ def process_gemini_response(response):
         return None
         
     try:
-        # Parse Gemini's response for tool calls
-        # This is a simple implementation - you might need to enhance it
-        # based on how Gemini formats its tool calls
-        if '"tool":' in response and '"params":' in response:
-            # Extract tool call information
-            tool_call_start = response.find('{')
-            tool_call_end = response.rfind('}') + 1
-            if tool_call_start >= 0 and tool_call_end > tool_call_start:
-                tool_call_str = response[tool_call_start:tool_call_end]
-                try:
-                    tool_call = json.loads(tool_call_str)
-                    if 'tool' in tool_call and 'params' in tool_call:
-                        # Execute the tool call
-                        logger.info(f"Executing tool call: {tool_call['tool']}")
-                        result = mcp_manager.execute_tool('filesystem', tool_call['tool'], tool_call['params'])
-                        if result:
-                            return f"Operation completed successfully: {json.dumps(result)}"
-                        else:
-                            return "Operation failed. Please try again."
-                except json.JSONDecodeError:
-                    logger.error("Error parsing tool call JSON")
-                    return None
+        # First try to find a JSON block in the response
+        json_start = response.find('{')
+        json_end = response.rfind('}') + 1
         
-        # If no tool call found, return the response as is
+        if json_start >= 0 and json_end > json_start:
+            # Extract the JSON string
+            json_str = response[json_start:json_end]
+            try:
+                tool_call = json.loads(json_str)
+                # Check if this is a valid tool call
+                if isinstance(tool_call, dict) and tool_call.get('tool') == 'write_file':
+                    # Convert to MCP filesystem format
+                    mcp_params = {
+                        'type': 'request',
+                        'tool': 'write_file',
+                        'path': tool_call.get('path'),
+                        'content': tool_call.get('content')
+                    }
+                    logger.info(f"Executing filesystem write: {tool_call.get('path')}")
+                    result = mcp_manager.execute_tool('write_file', mcp_params)
+                    
+                    if result is not None:
+                        return f"Operation completed successfully: File '{tool_call.get('path')}' was created."
+                    else:
+                        return "Operation failed. Please check the logs for details."
+            except json.JSONDecodeError:
+                logger.error("Error parsing tool call JSON")
+                return None
+        
+        # If no tool call found or not properly formatted, return the response as is
         return response
     except Exception as e:
         logger.error(f"Error processing Gemini response: {e}")

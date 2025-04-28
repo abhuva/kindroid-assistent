@@ -41,5 +41,5 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Data directory
+# Working directories
 data/ 

@@ -1,0 +1,24 @@
+# MCP Server Configuration
+mcp_servers:
+  filesystem:
+    enabled: true
+    allowed_directories:
+      - "${workspaceFolder}/data"  # Working directory for LLM-generated content
+    timeout_seconds: 30  # Timeout for MCP operations
+    retry_attempts: 3  # Number of retry attempts for failed operations
+
+# Scheduling Configuration
+scheduling:
+  interval_minutes: 180  # Run every 3 hours
+
+# Response Limits
+response_limits:
+  max_chars: 4000
+  max_tokens: 1000
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "log.txt"
+  max_size_mb: 10  # Maximum size of log file before rotation
+  backup_count: 5  # Number of backup log files to keep 

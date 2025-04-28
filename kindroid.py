@@ -16,12 +16,11 @@ import select
 import queue
 import errno
 
-# Add external directory to Python path
-external_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "external", "servers", "src", "filesystem")
-sys.path.append(external_dir)
+# Add MCP directory to Python path
+mcp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp")
+sys.path.append(mcp_dir)
 
-from mcp_client import MCPClient
-from mcp_server import MCPServer
+from mcp import MCPClient, MCPServer
 
 # --- Logging Configuration ---
 LOG_FILENAME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.txt")

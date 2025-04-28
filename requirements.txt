@@ -1,4 +1,12 @@
+# HTTP and API Communication
 requests>=2.31.0
+
+# Configuration and Environment
 python-dotenv>=1.0.0
+PyYAML>=6.0.1
+
+# Task Scheduling
 schedule>=1.2.0
-PyYAML>=6.0.1 
+
+# Note: This application also requires Node.js and the following NPM package:
+# npm install -g @modelcontextprotocol/server-filesystem 

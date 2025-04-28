@@ -30,6 +30,54 @@ var/
 # Virtual Environment
 venv/
 ENV/
+.venv/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Working directories
+data/
+mcp_server_temp/
+
+# Local configuration
+claude_desktop_config.json
+
+# Temporary files
+*.tmp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
 
 # IDE files
 .idea/

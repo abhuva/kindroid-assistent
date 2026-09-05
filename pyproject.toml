@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kindroid-codex-relay"
+version = "0.1.0"
+description = "Durable, approval-gated relay between a Kindroid group chat and Codex"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.141,<0.142",
+  "httpx>=0.28,<1",
+  "openai-codex==0.147.0",
+  "python-dotenv>=1.0,<2",
+  "uvicorn>=0.52,<0.53",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9"]
+
+[project.scripts]
+kindroid-relay = "kindroid_relay.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kindroid_relay = ["web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

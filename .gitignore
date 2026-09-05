@@ -1,93 +1,33 @@
-# Environment variables with API keys
+# Credentials and local configuration
 kindroid.env
+.env
 
-# Log files
-log.txt
-*.log
+# Relay runtime state
+var/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 
 # Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual Environment
-venv/
-ENV/
 .venv/
-
-# IDE files
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS specific files
-.DS_Store
-Thumbs.db
-
-# Working directories
-data/
-mcp_server_temp/
-
-# Local configuration
-claude_desktop_config.json
-
-# Temporary files
-*.tmp
-*~
-
-# Python
+venv/
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
 *.egg-info/
-.installed.cfg
-*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
 
-# Virtual Environment
-venv/
-ENV/
-
-# IDE files
+# Editors and operating systems
+.obsidian/
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# OS specific files
 .DS_Store
 Thumbs.db
 
-# Working directories
-data/ 
+# Local browser investigation artifacts
+.playwright-mcp/

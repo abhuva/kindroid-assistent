@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="relay-csrf" content="{{CSRF_TOKEN}}">
+  <meta name="relay-poll-ms" content="{{POLL_MS}}">
+  <title>Kindroid Relay</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">LOCAL RELAY</p>
+        <h1>Kindroid × Codex</h1>
+      </div>
+      <div id="connection" class="badge neutral" role="status">Connecting…</div>
+    </header>
+
+    <section class="panel status-panel" aria-labelledby="status-heading">
+      <div>
+        <p class="eyebrow" id="status-heading">STATUS</p>
+        <p id="relay-state" class="hero-state">Loading</p>
+        <p id="worker-note" class="muted">Waiting for the relay worker.</p>
+      </div>
+      <dl class="status-grid">
+        <div><dt>Worker</dt><dd id="worker-phase">—</dd></div>
+        <div><dt>Next initiative</dt><dd id="next-initiative">—</dd></div>
+        <div><dt>History budget</dt><dd id="history-budget">—</dd></div>
+        <div><dt>History API</dt><dd id="history-api">—</dd></div>
+        <div><dt>Last 429</dt><dd id="last-429">—</dd></div>
+        <div><dt>Turns</dt><dd id="turn-count">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="panel" aria-labelledby="controls-heading">
+      <p class="eyebrow" id="controls-heading">CONTROLS</p>
+      <div class="controls">
+        <button id="start-conversation" type="button">Start conversation</button>
+        <button id="trigger-initiative" type="button" class="secondary">Trigger check-in</button>
+        <button id="pause-relay" type="button" class="danger">Pause</button>
+        <button id="resume-relay" type="button" class="secondary">Resume</button>
+      </div>
+      <p id="command-status" class="muted" aria-live="polite">No dashboard command running.</p>
+    </section>
+
+    <div class="columns">
+      <section class="panel" aria-labelledby="activity-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">EVENTS</p>
+            <h2 id="activity-heading">Recent activity</h2>
+          </div>
+        </div>
+        <ol id="activity-list" class="feed"></ol>
+      </section>
+
+      <section class="panel" aria-labelledby="approvals-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">REVIEW</p>
+            <h2 id="approvals-heading">Pending approvals</h2>
+          </div>
+        </div>
+        <div id="approval-list" class="stack"></div>
+      </section>
+    </div>
+
+    <section class="panel" aria-labelledby="messages-heading">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">GROUP CHAT</p>
+          <h2 id="messages-heading">Recent messages</h2>
+        </div>
+        <button id="refresh-messages" type="button" class="text-button">Refresh</button>
+      </div>
+      <div id="message-list" class="messages"></div>
+    </section>
+
+    <details class="panel diagnostics">
+      <summary>Diagnostic log</summary>
+      <div class="diagnostic-toolbar">
+        <span class="muted">Bounded and redacted; rotated history may be incomplete.</span>
+        <button id="refresh-log" type="button" class="text-button">Refresh</button>
+      </div>
+      <pre id="log-tail" tabindex="0">Log not loaded.</pre>
+    </details>
+  </main>
+
+  <dialog id="approval-dialog" aria-labelledby="approval-dialog-title">
+    <form method="dialog">
+      <p class="eyebrow">EXTERNAL ACTION</p>
+      <h2 id="approval-dialog-title">Review proposal</h2>
+      <p id="approval-summary"></p>
+      <pre id="approval-instruction"></pre>
+      <dl class="dialog-meta">
+        <div><dt>Risk</dt><dd id="approval-risk"></dd></div>
+        <div><dt>Sandbox</dt><dd id="approval-sandbox"></dd></div>
+      </dl>
+      <label class="check"><input id="approval-post-result" type="checkbox"> Post the result back to the group</label>
+      <div class="dialog-actions">
+        <button value="cancel" class="secondary">Cancel</button>
+        <button id="reject-approval" value="reject" class="danger">Reject</button>
+        <button id="execute-approval" value="execute">Execute exactly this action</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="announcer" class="sr-only" aria-live="polite"></div>
+</body>
+</html>

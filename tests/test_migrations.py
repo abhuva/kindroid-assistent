@@ -5,6 +5,7 @@ import pytest
 
 from kindroid_relay.migrations import (
     LATEST_SCHEMA_VERSION,
+    MIGRATIONS,
     SchemaVersionError,
     apply_migrations,
     current_schema_version,
@@ -122,3 +123,23 @@ def test_non_migrating_connection_requires_current_schema(tmp_path: Path) -> Non
 
     with pytest.raises(SchemaVersionError, match="does not match required"):
         RelayState(path, migrate=False)
+
+
+def test_version_two_upgrade_preserves_messages_and_source_links(tmp_path: Path) -> None:
+    path = tmp_path / "version-two.sqlite3"
+    connection = open_database(path)
+    apply_migrations(connection, MIGRATIONS[:2])
+    with connection:
+        connection.execute("INSERT INTO messages VALUES ('remote-1', 'g1', 'ai1', 'ai', 'Hannah', 123, 'Kept message', 1, 123)")
+        connection.execute("INSERT INTO outbox VALUES ('delivery', 'Kept reply', 'hash', 'remote-1', 0, 'sent', NULL, 123, 123)")
+        connection.execute("INSERT INTO approvals VALUES ('approval', 'remote-1', 'summary', 'instruction', 'low', 'pending', NULL, 123, 123)")
+    connection.close()
+    assert migrate_database(path) == [3]
+    with RelayState(path) as state:
+        message = state.connection.execute("SELECT * FROM messages").fetchone()
+        assert message["remote_id"] == message["kindroid_id"] == "remote-1"
+        assert message["body"] == "Kept message"
+        assert message["processed"] == 1
+        assert state.outbox_for_source("remote-1")["id"] == "delivery"
+        assert state.get_approval("approval")["source_message_id"] == "remote-1"
+        assert state.connection.execute("PRAGMA foreign_key_check").fetchall() == []

@@ -28,6 +28,8 @@ def test_dashboard_settings_have_safe_defaults(tmp_path: Path) -> None:
     assert settings.idle_poll_seconds == 600
     assert settings.min_history_interval_seconds == 15
     assert settings.history_429_cooldown_seconds == 3600
+    assert settings.activity_retention_days == 30
+    assert settings.initiative_max_checks_24h == 50
     assert settings.worker_stale_seconds > settings.worker_heartbeat_seconds
     assert settings.log_max_bytes == 5_242_880
     assert settings.log_backup_count == 5

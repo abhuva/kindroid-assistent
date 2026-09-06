@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import secrets
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..activity import ActivitySeverity
@@ -20,6 +22,7 @@ from ..command_queue import (
     CommandValidationError,
 )
 from ..config import Settings
+from ..log_tail import read_log_tail as _read_log_tail
 from ..redaction import redact_text
 from ..state import RelayState, RelayStateFactory
 from ..worker import request_pause
@@ -30,7 +33,11 @@ from .schemas import (
     ApprovalPageResponse,
     ApprovalResponse,
     CommandResponse,
+    CommandPageResponse,
+    DeliveryResponse,
+    DeliveryPageResponse,
     CommandSubmission,
+    InitiativeLimitRequest,
     ErrorResponse,
     HealthResponse,
     LogTailResponse,
@@ -53,6 +60,8 @@ def _utc(timestamp: int | None) -> datetime | None:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
 
+
+
 def _command_response(
     command: CommandRecord,
     *,
@@ -68,6 +77,7 @@ def _command_response(
         completed_at=_utc(command.completed_at),
         result=command.result,
         error=command.error,
+        approval_id=command.payload.get("approval_id"),
     )
 
 
@@ -188,6 +198,23 @@ def create_web_app(
             redact_text(exc.detail, maximum=500),
         )
 
+    @app.exception_handler(sqlite3.Error)
+    async def database_error_handler(_request: Request, exc: sqlite3.Error) -> JSONResponse:
+        # A handled error avoids Uvicorn's generic exception/connection-close path.
+        # Extended SQLite codes have the primary code in the low byte (BUSY=5,
+        # LOCKED=6); Python 3.10 lacks sqlite_errorcode, so allow known text there.
+        code = getattr(exc, "sqlite_errorcode", 0) or 0
+        busy = (code & 255) in {5, 6} or str(exc) in {
+            "database is locked", "database table is locked",
+        }
+        logger.warning("Dashboard database request failed (%s)", "busy" if busy else "unavailable")
+        return _error(
+            503 if busy else 500,
+            "database_busy" if busy else "database_unavailable",
+            "Database is busy; inspect command status before retrying the same request."
+            if busy else "Database is unavailable; preserve local state and investigate.",
+        )
+
     @app.exception_handler(Exception)
     async def unhandled_error_handler(_request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Dashboard request failed")
@@ -218,6 +245,7 @@ def create_web_app(
         now = int(time.time())
         with state_factory.connect() as state:
             relay_status = state.status()
+            initiative_budget = state.initiative_budget(settings.initiative_max_checks_24h)
             worker = state.worker_status.get()
             active = (
                 state.commands.get(worker.active_command_id)
@@ -241,6 +269,7 @@ def create_web_app(
             active_command=_command_response(active) if active else None,
             schedule={
                 "initiative_enabled": settings.initiative_enabled,
+                "initiative_budget": initiative_budget,
                 "initiative_schedule_hours": settings.initiative_schedule_hours,
                 "initiative_interval_seconds": settings.initiative_interval_seconds,
                 "initiative_quiet_hours": settings.initiative_quiet_hours,
@@ -253,6 +282,7 @@ def create_web_app(
                 "history_429_cooldown_seconds": (
                     settings.history_429_cooldown_seconds
                 ),
+                "activity_retention_days": settings.activity_retention_days,
                 "max_consecutive_turns": settings.max_consecutive_turns,
             },
             effective_sandbox=settings.approved_sandbox,
@@ -285,52 +315,100 @@ def create_web_app(
             has_more=has_more,
         )
 
+    def message_response(state: RelayState, row: Any) -> MessageResponse:
+        body = str(row["body"])
+        known = row["sender_type"] == "user" and state.is_known_outbound(body)
+        name = str(row["display_name"])
+        participant = "unknown"
+        if known:
+            participant = "codex"
+        elif row["sender_type"] == "ai" and name.casefold() == settings.kindroid_display_name.casefold():
+            participant = "hannah"
+        elif row["sender_type"] == "user" and name.casefold() == settings.restore_persona_name.casefold():
+            participant = "marc"
+        return MessageResponse(
+            id=str(row["remote_id"]), speaker=name,
+            sender=str(row["sender"]), sender_type=str(row["sender_type"]),
+            display_name=name, timestamp=int(row["timestamp"]), body=body,
+            known_codex_outbound=known, participant=participant,
+            history_confirmed=row["kindroid_id"] is not None,
+            identity_fallback=known and name.casefold() != settings.codex_display_name.casefold(),
+        )
+
+    @app.get("/api/v1/messages/{message_id}", response_model=MessageResponse)
+    def message_detail(message_id: str) -> MessageResponse:
+        with state_factory.connect() as state:
+            row = state.connection.execute(
+                "SELECT * FROM messages WHERE remote_id = ?", (message_id,)
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="message not found")
+            return message_response(state, row)
+
     @app.get("/api/v1/messages", response_model=MessagePageResponse)
     def messages(
         before: int | None = Query(default=None, ge=0),
+        before_id: str | None = Query(default=None, max_length=256),
         limit: int = Query(default=50, ge=1, le=200),
     ) -> MessagePageResponse:
         with state_factory.connect() as state:
             parameters: list[Any] = []
             predicate = ""
             if before is not None:
-                predicate = "WHERE timestamp < ?"
-                parameters.append(before)
+                if before_id is not None:
+                    predicate = "WHERE (timestamp < ? OR (timestamp = ? AND remote_id < ?))"
+                    parameters.extend([before, before, before_id])
+                else:
+                    predicate = "WHERE timestamp < ?"
+                    parameters.append(before)
             parameters.append(limit + 1)
             rows = state.connection.execute(
                 f"SELECT * FROM messages {predicate} "
-                "ORDER BY timestamp DESC, received_at DESC LIMIT ?",
+                "ORDER BY timestamp DESC, remote_id DESC LIMIT ?",
                 parameters,
             ).fetchall()
             has_more = len(rows) > limit
             rows = rows[:limit]
-            items = []
-            for row in rows:
-                body = str(row["body"])
-                known = state.is_known_outbound(body)
-                fallback = bool(
-                    known
-                    and str(row["display_name"]).casefold()
-                    != settings.codex_display_name.casefold()
-                )
-                items.append(
-                    MessageResponse(
-                        id=str(row["remote_id"]),
-                        speaker=str(row["display_name"]),
-                        sender_type=str(row["sender_type"]),
-                        display_name=str(row["display_name"]),
-                        timestamp=int(row["timestamp"]),
-                        body=body,
-                        known_codex_outbound=known,
-                        identity_fallback=fallback,
-                    )
-                )
+            items = [message_response(state, row) for row in rows]
         next_before = items[-1].timestamp if items and has_more else None
         return MessagePageResponse(
             items=items,
             next_before=next_before,
             has_more=has_more,
+            next_before_id=items[-1].id if items and has_more else None,
         )
+
+    def delivery_response(row: Any) -> DeliveryResponse:
+        return DeliveryResponse(
+            id=row["id"], status=row["status"], source_message_id=row["source_message_id"],
+            created_at=_utc(row["created_at"]), updated_at=_utc(row["updated_at"]),
+        )
+
+    @app.get("/api/v1/deliveries", response_model=DeliveryPageResponse)
+    def deliveries() -> DeliveryPageResponse:
+        with state_factory.connect() as state:
+            rows = state.connection.execute(
+                "SELECT * FROM outbox WHERE status IN ('uncertain', 'sending') "
+                "ORDER BY updated_at DESC, id DESC LIMIT 51"
+            ).fetchall()
+        return DeliveryPageResponse(items=[delivery_response(row) for row in rows[:50]], has_more=len(rows) > 50)
+
+    @app.get("/api/v1/deliveries/{delivery_id}", response_model=DeliveryResponse)
+    def delivery_detail(delivery_id: str) -> DeliveryResponse:
+        with state_factory.connect() as state:
+            row = state.connection.execute("SELECT * FROM outbox WHERE id = ?", (delivery_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="delivery not found")
+        return delivery_response(row)
+
+    @app.get("/api/v1/commands", response_model=CommandPageResponse)
+    def recent_commands() -> CommandPageResponse:
+        with state_factory.connect() as state:
+            rows = state.connection.execute(
+                "SELECT * FROM commands ORDER BY status IN ('queued', 'running') DESC, "
+                "requested_at DESC, rowid DESC LIMIT 50"
+            ).fetchall()
+            return CommandPageResponse(items=[_command_response(state.commands._record(row)) for row in rows])
 
     @app.get("/api/v1/approvals", response_model=ApprovalPageResponse)
     def approvals(status: str | None = None) -> ApprovalPageResponse:
@@ -359,17 +437,19 @@ def create_web_app(
         return _command_response(row)
 
     @app.get("/api/v1/diagnostics/log-tail", response_model=LogTailResponse)
-    def log_tail(lines: int = Query(default=100, ge=1, le=500)) -> LogTailResponse:
+    def log_tail(request: Request, lines: int = Query(default=100, ge=1, le=500)) -> Response:
         path = settings.log_path
-        if not path.exists():
-            return LogTailResponse(lines=[], truncated=False, source=path.name)
-        values = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        selected = values[-lines:]
-        return LogTailResponse(
+        selected, truncated = _read_log_tail(path, lines)
+        payload = LogTailResponse(
             lines=[redact_text(value, maximum=4000) for value in selected],
-            truncated=len(values) > len(selected),
+            truncated=truncated,
             source=path.name,
         )
+        content = payload.model_dump_json()
+        etag = '"' + hashlib.sha256(content.encode()).hexdigest() + '"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag})
+        return Response(content, media_type="application/json", headers={"ETag": etag})
 
     def enqueue(
         command_type: CommandType,
@@ -404,6 +484,10 @@ def create_web_app(
     def start_conversation(body: CommandSubmission) -> CommandResponse:
         return enqueue(CommandType.START_CONVERSATION, body)
 
+    @app.post("/api/v1/settings/initiative-limit", response_model=CommandResponse, status_code=202)
+    def set_initiative_limit(body: InitiativeLimitRequest) -> CommandResponse:
+        return enqueue(CommandType.SET_INITIATIVE_LIMIT, body, {"limit": body.limit})
+
     @app.post(
         "/api/v1/commands/trigger-initiative",
         response_model=CommandResponse,
@@ -429,12 +513,27 @@ def create_web_app(
             work_in_flight=in_flight,
         )
 
+    def approval_retry(body: CommandSubmission, command_type: CommandType, payload: dict[str, Any]) -> CommandResponse | None:
+        with state_factory.connect() as state:
+            row = state.connection.execute(
+                "SELECT * FROM commands WHERE idempotency_key = ?", (body.idempotency_key,)
+            ).fetchone()
+            if row is not None:
+                record = state.commands._record(row)
+                if record.command_type != command_type or record.payload != payload:
+                    raise CommandConflictError("idempotency key already belongs to a different action")
+                return _command_response(record, created=False)
+        return None
+
     @app.post(
         "/api/v1/approvals/{approval_id}/reject",
         response_model=CommandResponse,
         status_code=202,
     )
     def reject(approval_id: str, body: CommandSubmission) -> CommandResponse:
+        previous = approval_retry(body, CommandType.REJECT_APPROVAL, {"approval_id": approval_id})
+        if previous is not None:
+            return previous
         with state_factory.connect() as state:
             row = state.get_approval(approval_id)
             if row is None:
@@ -456,6 +555,9 @@ def create_web_app(
         approval_id: str,
         body: ApprovalExecutionRequest,
     ) -> CommandResponse:
+        previous = approval_retry(body, CommandType.EXECUTE_APPROVAL, {"approval_id": approval_id, "post_result": body.post_result})
+        if previous is not None:
+            return previous
         with state_factory.connect() as state:
             row = state.get_approval(approval_id)
             if row is None:

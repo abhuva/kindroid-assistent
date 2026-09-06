@@ -3,14 +3,18 @@ from __future__ import annotations
 import logging
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from datetime import datetime, timedelta
+from typing import Any, cast
 
-from .activity import ActivitySeverity
+from .activity import ActivitySeverity, WorkerPhase
 from .config import Settings
 from .kindroid_api import KindroidAPIError, KindroidClient
 from .models import AgentReply, ChatMessage
-from .state import RelayState
+from .redaction import redact_text
+from .state import NON_SPENDING_INITIATIVE_OUTCOMES, RelayState
+from .turns import EmptyGeneratedReply, ReconciliationError
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +26,9 @@ class HistoryCooldownError(RuntimeError):
         super().__init__(f"Kindroid history requests are cooling down until {retry_at}")
 
 
+PhaseContext = Callable[[WorkerPhase, str], AbstractContextManager[None]]
+
+
 class Relay:
     def __init__(
         self,
@@ -29,11 +36,114 @@ class Relay:
         state: RelayState,
         kindroid: KindroidClient,
         agent_factory: Callable[[], object],
+        phase_context: PhaseContext | None = None,
     ) -> None:
         self.settings = settings
         self.state = state
         self.kindroid = kindroid
         self.agent_factory = agent_factory
+        self.phase_context = phase_context or (lambda _phase, _note: nullcontext())
+        self.initiative_outcome: str | None = None
+        self._context_synced_at = 0.0
+
+    def _event(
+        self,
+        kind: str,
+        severity: ActivitySeverity,
+        summary: str,
+        *,
+        details: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        self.state.activity.add(
+            kind,
+            severity,
+            summary,
+            details=details,
+            correlation_id=correlation_id,
+        )
+
+    def _pause(self, reason: str, summary: str) -> None:
+        was_paused = self.state.is_paused()
+        self.state.pause(reason)
+        if not was_paused:
+            self._event(
+                "relay_paused",
+                ActivitySeverity.WARNING,
+                summary,
+                details={"reason": reason},
+            )
+
+    def _mark_message_processed(self, message_id: str) -> None:
+        self.state.mark_message_processed(message_id)
+        self._event(
+            "message_processed",
+            ActivitySeverity.INFO,
+            "Kindroid message processed",
+            details={"message_id": message_id},
+            correlation_id=message_id,
+        )
+
+    def _call_codex(
+        self,
+        operation: str,
+        callback: Callable[[], Any],
+        *,
+        details: dict[str, Any],
+        correlation_id: str,
+    ) -> Any:
+        self._event(
+            "codex_started",
+            ActivitySeverity.INFO,
+            f"Codex started {operation}",
+            details=details,
+            correlation_id=correlation_id,
+        )
+        try:
+            with self.phase_context(WorkerPhase.RUNNING_CODEX, f"Codex {operation}"):
+                result = callback()
+        except Exception as exc:
+            self._event(
+                "codex_failed",
+                ActivitySeverity.ERROR,
+                f"Codex {operation} failed",
+                details={**details, "error_type": exc.__class__.__name__},
+                correlation_id=correlation_id,
+            )
+            raise
+        self._event(
+            "codex_completed",
+            ActivitySeverity.INFO,
+            f"Codex completed {operation}",
+            details=details,
+            correlation_id=correlation_id,
+        )
+        return result
+
+    @contextmanager
+    def _agent_session(self, correlation_id: str) -> Iterator[Any]:
+        entered = False
+        try:
+            with self.phase_context(
+                WorkerPhase.RUNNING_CODEX,
+                "Codex conversation session",
+            ):
+                with self.agent_factory() as agent:  # type: ignore[attr-defined]
+                    entered = True
+                    yield agent
+        except Exception as exc:
+            if not entered:
+                self._event(
+                    "codex_failed",
+                    ActivitySeverity.ERROR,
+                    "Codex session failed to open",
+                    details={
+                        "message_id": correlation_id,
+                        "error_type": exc.__class__.__name__,
+                    },
+                    correlation_id=correlation_id,
+                )
+            raise
 
     def _history_page(self, start_after: int | None):
         now = int(time.time())
@@ -50,11 +160,15 @@ class Relay:
         self.state.record_history_request(self.settings.max_history_requests_24h)
         self.state.set_meta("last_history_request_at_ms", int(time.time() * 1000))
         try:
-            page = self.kindroid.get_messages_page(
-                self.settings.group_id,
-                limit=100,
-                start_after_timestamp=start_after,
-            )
+            with self.phase_context(
+                WorkerPhase.WAITING_FOR_KINDROID,
+                "Synchronizing Kindroid history",
+            ):
+                page = self.kindroid.get_messages_page(
+                    self.settings.group_id,
+                    limit=100,
+                    start_after_timestamp=start_after,
+                )
         except KindroidAPIError as exc:
             if exc.status_code != 429:
                 raise
@@ -91,12 +205,40 @@ class Relay:
         return page
 
     def sync_history(self, *, initial: bool = False) -> int:
-        cursor = None if initial else max(0, self.state.get_int("cursor_timestamp", 0) - 1)
+        cursor = None if initial else max(0, self.state.turns.sync_cursor(
+            self.settings.group_id, self.state.get_int("cursor_timestamp", 0)
+        ) - 1)
         inserted = 0
         visited_cursors: set[int] = set()
+        history: dict[str, ChatMessage] = {}
+        # Complete pagination before associating replies: a later page may
+        # contain another identical candidate. Never hold SQLite over HTTP.
         while True:
             page = self._history_page(cursor)
-            for message in page.messages:
+            history.update((m.id, m) for m in page.messages if m.id)
+            timestamps = [message.timestamp for message in page.messages]
+            next_cursor = page.last_timestamp or (max(timestamps) if timestamps else cursor)
+            if not page.has_more:
+                break
+            if next_cursor is None or next_cursor in visited_cursors or (cursor is not None and next_cursor <= cursor):
+                raise RuntimeError("Kindroid history pagination did not advance; synchronization deferred")
+            visited_cursors.add(next_cursor)
+            cursor = next_cursor
+        messages = sorted(history.values(), key=lambda m: m.timestamp)
+        previously_known = {row[0] for row in self.state.connection.execute(
+            "SELECT kindroid_id FROM messages WHERE kindroid_id IS NOT NULL"
+        )}
+        try:
+            reconciled = self.state.turns.reconcile(self.settings.group_id, messages)
+            # Do not ingest potential copies as new events until every local
+            # effect has an unambiguous remote association. Retry on a later
+            # scheduled sync, never by polling here or repeating generation.
+            self.state.turns.require_reconciled(self.settings.group_id)
+        except ReconciliationError:
+            self._pause("Kindroid history reconciliation is unresolved; inspect conversation", "Relay paused for unresolved history reconciliation")
+            raise
+        for message in messages:
+            if message.id not in reconciled:
                 processed = message.sender_type != "ai"
                 known_outbound = (
                     message.sender_type == "user"
@@ -108,26 +250,46 @@ class Relay:
                     self.settings.group_id, message, processed=processed
                 )
                 inserted += int(was_inserted)
+                if was_inserted:
+                    self._event(
+                        "message_received",
+                        ActivitySeverity.INFO,
+                        f"Message received from {message.display_name}",
+                        details={
+                            "message_id": message.id,
+                            "display_name": message.display_name,
+                            "sender_type": message.sender_type,
+                        },
+                        correlation_id=message.id,
+                    )
                 if was_inserted and known_outbound:
                     self._observe_outbound_identity(message)
-
-            timestamps = [message.timestamp for message in page.messages]
-            next_cursor = page.last_timestamp or (max(timestamps) if timestamps else cursor)
-            if next_cursor is not None:
-                self.state.set_meta(
-                    "cursor_timestamp",
-                    max(self.state.get_int("cursor_timestamp", 0), next_cursor),
-                )
-            if not page.has_more or next_cursor is None or next_cursor in visited_cursors:
-                break
-            visited_cursors.add(next_cursor)
-            cursor = next_cursor
+            elif message.id not in previously_known and message.sender_type == "user":
+                local = self.state.connection.execute(
+                    "SELECT * FROM messages WHERE kindroid_id = ?", (message.id,)
+                ).fetchone()
+                self._observe_outbound_identity(self.state._row_to_message(local))
+        if messages:
+            self.state.set_meta("cursor_timestamp", max(
+                self.state.get_int("cursor_timestamp", 0), max(m.timestamp for m in messages)
+            ))
         if inserted:
             latest = self.state.latest_message()
             self._schedule_initiative(
                 base_at=self._message_epoch_seconds(latest) if latest else None
             )
         return inserted
+
+    def synchronize_context(self) -> None:
+        """Explicit boundary before work needing current shared context."""
+        self.sync_history()
+        try:
+            self.state.turns.require_reconciled(self.settings.group_id)
+        except ReconciliationError:
+            self._pause("Kindroid generation remains uncertain; inspect conversation before resuming", "Relay paused for uncertain Kindroid generation")
+            raise
+        self._context_synced_at = time.monotonic()
+        self.state.set_meta("context_synced_at", int(time.time()))
 
     def bootstrap(self, *, respond_to_latest: bool = False, force: bool = False) -> int:
         if self.state.get_meta("bootstrapped", "0") == "1" and not force:
@@ -140,23 +302,31 @@ class Relay:
                 self.state.mark_message_processed(latest.id, False)
         self.state.set_meta("bootstrapped", True)
         self.state.set_meta("group_id", self.settings.group_id)
+        self.state.set_meta("context_synced_at", int(time.time()))
+        self._context_synced_at = time.monotonic()
         return inserted
 
-    def run_once(self) -> int:
+    def run_once(self, *, initiative_now: bool = False) -> int:
+        self.initiative_outcome = None
         if self.state.is_paused():
             logger.info("Relay is paused: %s", self.state.get_meta("pause_reason", ""))
+            if initiative_now:
+                self._skip_initiative("paused", "Check-in skipped because the relay is paused", persist=False)
             return 0
         if self.state.get_meta("bootstrapped", "0") != "1":
             inserted = self.bootstrap()
             logger.info("Bootstrapped %s existing messages; waiting for new activity", inserted)
+            if initiative_now:
+                self._skip_initiative("bootstrapped", "Check-in skipped while initial history was bootstrapped; trigger again to check in", persist=False)
             return 0
 
-        self.sync_history()
-        self._maybe_offer_initiative()
+        self.synchronize_context()
+        self._maybe_offer_initiative(force_due=initiative_now)
         handled = 0
-        if not self.state.pending_ai_messages():
+        pending = self.state.pending_ai_messages()
+        if not pending:
             return 0
-        with self.agent_factory() as agent:
+        with self._agent_session(pending[0].id) as agent:
             while not self.state.is_paused():
                 pending = self.state.pending_ai_messages()
                 if not pending:
@@ -166,12 +336,9 @@ class Relay:
         return handled
 
     def trigger_initiative_now(self) -> int:
-        if not self.settings.initiative_enabled:
-            logger.info("Initiative checks are disabled")
-            return self.run_once()
-        self.state.set_meta("initiative_schedule_basis", self._initiative_schedule_basis())
-        self.state.set_meta("initiative_due_at", int(time.time()))
-        return self.run_once()
+        # Carry intent through synchronization, which may reschedule initiative.
+        # Only the due-time gate is bypassed, never the operational safeguards.
+        return self.run_once(initiative_now=True)
 
     def start_conversation_now(self) -> int:
         """Start a fresh, scheduler-independent conversation for manual testing."""
@@ -181,8 +348,10 @@ class Relay:
 
         if self.state.get_meta("bootstrapped", "0") != "1":
             self.bootstrap()
+            self.state.turns.require_reconciled(self.settings.group_id)
+            self._context_synced_at = time.monotonic()
         else:
-            self.sync_history()
+            self.synchronize_context()
 
         pending = self.state.pending_ai_messages()
         if pending:
@@ -197,16 +366,21 @@ class Relay:
 
         self.state.set_meta("consecutive_turns", 0)
         logger.info("Manual conversation: sending a Codex opener to Kindroid")
-        with self.agent_factory() as agent:
-            opener = agent.manual_conversation_opener(latest)  # type: ignore[attr-defined]
-            self._send_user_message(self._limit_reply(opener))
+        with self._agent_session(latest.id) as agent:
+            opener = cast(
+                str,
+                self._call_codex(
+                    "manual conversation opener",
+                    lambda: agent.manual_conversation_opener(latest),  # type: ignore[attr-defined]
+                    details={"message_id": latest.id},
+                    correlation_id=latest.id,
+                ),
+            )
+            outbox_id = self._send_user_message(self._limit_reply(opener))
             try:
-                incoming = self._request_ai_turn(allow_user=False)
+                incoming = self._request_ai_turn(outbox_id=outbox_id, allow_user=False)
             except HistoryCooldownError:
-                logger.warning(
-                    "Manual conversation response will be synchronized after the "
-                    "history cooldown"
-                )
+                logger.info("Manual conversation reply will be recovered after the history cooldown")
                 return 1
             if incoming is None:
                 raise RuntimeError("Kindroid did not select an AI for the forced response")
@@ -217,6 +391,22 @@ class Relay:
     def _handle_chain(self, agent: object, incoming: ChatMessage) -> None:
         current: ChatMessage | None = incoming
         while current is not None and not self.state.is_paused():
+            # A history cooldown can end a chain immediately after generation,
+            # before the usual post-generation limit check runs.
+            if self.state.get_int("consecutive_turns", 0) >= self.settings.max_consecutive_turns:
+                self._pause(
+                    f"automatic turn limit reached ({self.settings.max_consecutive_turns})",
+                    "Relay paused at the automatic turn limit",
+                )
+                return
+            # Direct replies already provide the next event. Only refresh the
+            # remote context when a long exchange crosses the activity interval.
+            if time.monotonic() - self._context_synced_at >= self.settings.poll_seconds:
+                self.synchronize_context()
+                pending = self.state.pending_ai_messages()
+                current = pending[0] if pending else None
+                if current is None:
+                    return
             logger.info(
                 "Processing Kindroid message %s from %s",
                 current.id,
@@ -224,6 +414,7 @@ class Relay:
             )
             delivered = self.state.outbox_for_source(current.id)
             if delivered is not None and delivered["status"] == "sent":
+                outbox_id = str(delivered["id"])
                 request_kindroid_reply = bool(delivered["request_kindroid_reply"])
                 logger.warning(
                     "Recovering Kindroid message %s after its Codex reply was "
@@ -231,9 +422,28 @@ class Relay:
                     current.id,
                 )
             else:
-                reply: AgentReply = agent.reply_to(current)  # type: ignore[attr-defined]
+                reply = cast(
+                    AgentReply,
+                    self._call_codex(
+                        "reply",
+                        lambda: agent.reply_to(current),  # type: ignore[attr-defined]
+                        details={"message_id": current.id},
+                        correlation_id=current.id,
+                    ),
+                )
                 if reply.action:
                     approval_id = self.state.add_approval(current.id, reply.action)
+                    self._event(
+                        "approval_created",
+                        ActivitySeverity.WARNING,
+                        "Approval proposal created",
+                        details={
+                            "approval_id": approval_id,
+                            "source_message_id": current.id,
+                            "risk": reply.action.risk,
+                        },
+                        correlation_id=approval_id,
+                    )
                     logger.warning(
                         "Action proposal %s requires local approval: %s",
                         approval_id,
@@ -241,17 +451,17 @@ class Relay:
                     )
 
                 if not reply.reply:
-                    self.state.mark_message_processed(current.id)
+                    self._mark_message_processed(current.id)
                     return
 
                 body = self._limit_reply(reply.reply)
-                self._send_user_message(
+                outbox_id = self._send_user_message(
                     body,
                     source_message_id=current.id,
                     request_kindroid_reply=reply.request_kindroid_reply,
                 )
                 request_kindroid_reply = reply.request_kindroid_reply
-            self.state.mark_message_processed(current.id)
+            self._mark_message_processed(current.id)
             turns = self.state.get_int("consecutive_turns", 0) + 1
             self.state.set_meta("consecutive_turns", turns)
 
@@ -261,16 +471,16 @@ class Relay:
                 return
 
             try:
-                next_message = self._request_ai_turn(allow_user=False)
+                next_message = self._request_ai_turn(outbox_id=outbox_id, allow_user=False)
             except HistoryCooldownError:
-                logger.warning(
-                    "Kindroid response will be synchronized after the history cooldown"
-                )
+                logger.info("Kindroid reply will be recovered after the history cooldown")
                 return
             if turns >= self.settings.max_consecutive_turns:
-                self.state.pause(
-                    f"automatic turn limit reached ({self.settings.max_consecutive_turns})"
+                reason = (
+                    "automatic turn limit reached "
+                    f"({self.settings.max_consecutive_turns})"
                 )
+                self._pause(reason, "Relay paused at the automatic turn limit")
                 logger.warning("Automatic turn limit reached; relay paused")
                 return
             current = next_message
@@ -316,8 +526,11 @@ class Relay:
         *,
         source_message_id: str | None = None,
         request_kindroid_reply: bool | None = None,
-    ) -> None:
+    ) -> str:
         body = self._outbound_body(body)
+        if self.state.turns.has_uncertain():
+            self._pause("Kindroid generation remains uncertain; synchronize before sending", "Relay paused for uncertain Kindroid generation")
+            raise ReconciliationError("Kindroid generation remains uncertain; synchronize before sending")
         existing = (
             self.state.outbox_for_source(source_message_id)
             if source_message_id is not None
@@ -329,13 +542,13 @@ class Relay:
                     "Skipping an already delivered reply for Kindroid message %s",
                     source_message_id,
                 )
-                return
+                return str(existing["id"])
             if existing["status"] in {"sending", "uncertain"}:
                 reason = (
                     "outbound delivery remains uncertain for Kindroid message "
                     f"{source_message_id}; refusing to send a possible duplicate"
                 )
-                self.state.pause(reason)
+                self._pause(reason, "Relay paused for uncertain outbound delivery")
                 raise RuntimeError(reason)
             outbox_id = str(existing["id"])
             body = str(existing["body"])
@@ -345,25 +558,80 @@ class Relay:
                 source_message_id=source_message_id,
                 request_kindroid_reply=request_kindroid_reply,
             )
+            self._event(
+                "outbound_created",
+                ActivitySeverity.INFO,
+                "Outbound Kindroid message created",
+                details={
+                    "outbox_id": outbox_id,
+                    **(
+                        {"source_message_id": source_message_id}
+                        if source_message_id
+                        else {}
+                    ),
+                },
+                correlation_id=outbox_id,
+            )
         self.state.set_outbox_status(outbox_id, "sending")
+        outbound_details = {
+            "outbox_id": outbox_id,
+            **(
+                {"source_message_id": source_message_id}
+                if source_message_id
+                else {}
+            ),
+        }
+        self._event(
+            "outbound_sending",
+            ActivitySeverity.INFO,
+            "Sending message to Kindroid",
+            details=outbound_details,
+            correlation_id=outbox_id,
+        )
         try:
-            if self.settings.persona_switch_enabled:
-                try:
-                    self._activate_codex_persona()
+            with self.phase_context(WorkerPhase.SENDING, "Sending message to Kindroid"):
+                if self.settings.persona_switch_enabled:
+                    try:
+                        self._activate_codex_persona()
+                        self.kindroid.post_user_message(self.settings.group_id, body)
+                    finally:
+                        self._restore_user_persona()
+                else:
                     self.kindroid.post_user_message(self.settings.group_id, body)
-                finally:
-                    self._restore_user_persona()
-            else:
-                self.kindroid.post_user_message(self.settings.group_id, body)
+            self.state.turns.record_sent(
+                outbox_id, self.settings.group_id, self.settings.codex_display_name,
+                self.state.get_int("cursor_timestamp", 0),
+            )
         except Exception as exc:
             self.state.set_outbox_status(
-                outbox_id, "uncertain", f"{exc.__class__.__name__}: {exc}"
+                outbox_id,
+                "uncertain",
+                f"{exc.__class__.__name__}: {redact_text(exc, maximum=500)}",
             )
-            self.state.pause(
-                f"outbound delivery uncertain; inspect outbox item {outbox_id}"
+            self._event(
+                "outbound_uncertain",
+                ActivitySeverity.ERROR,
+                "Outbound Kindroid delivery is uncertain",
+                details={
+                    **outbound_details,
+                    "error_type": exc.__class__.__name__,
+                },
+                correlation_id=outbox_id,
+            )
+            self._pause(
+                f"outbound delivery uncertain; inspect outbox item {outbox_id}",
+                "Relay paused for uncertain outbound delivery",
             )
             raise
-        self.state.set_outbox_status(outbox_id, "sent")
+        self._schedule_initiative()
+        self._event(
+            "outbound_sent",
+            ActivitySeverity.INFO,
+            "Outbound Kindroid message sent",
+            details=outbound_details,
+            correlation_id=outbox_id,
+        )
+        return outbox_id
 
     def _observe_outbound_identity(self, stored: ChatMessage) -> None:
         self.state.set_meta("last_identity_observed_at", int(time.time()))
@@ -378,30 +646,131 @@ class Relay:
                 self.settings.codex_display_name,
                 stored.display_name,
             )
+            self._event(
+                "identity_fallback",
+                ActivitySeverity.WARNING,
+                "Stored outbound identity differed; Codex prefix remains authoritative",
+                details={
+                    "message_id": stored.id,
+                    "display_name": stored.display_name,
+                },
+                correlation_id=stored.id,
+            )
 
-    def _request_ai_turn(self, *, allow_user: bool) -> ChatMessage | None:
-        known_ids = {message.id for message in self.state.pending_ai_messages()}
-        ai_id = self.kindroid.get_turn(
-            self.settings.group_id, allow_user=allow_user
-        )
-        if not ai_id:
-            logger.info("Kindroid returned the user turn")
-            return None
-        self.kindroid.generate_ai_response(self.settings.group_id, ai_id)
-
-        for delay in (0, 2, 4, 7):
-            if delay:
-                time.sleep(delay)
-            self.sync_history()
-            candidates = [
-                message
-                for message in self.state.pending_ai_messages()
-                if message.id not in known_ids
-            ]
-            if candidates:
-                return candidates[-1]
-        self.state.pause("generated Kindroid response was not found in message history")
-        raise RuntimeError("Kindroid response generation completed but no message appeared")
+    def _request_ai_turn(self, *, outbox_id: str, allow_user: bool) -> ChatMessage | None:
+        existing = self.state.turns.for_outbox(outbox_id)
+        if existing is not None:
+            if existing["status"] in {"received", "reconciled"}:
+                return self.state.turns.message(existing["id"])
+            raise ReconciliationError("Kindroid generation remains uncertain; synchronize before continuing")
+        if self.state.turns.has_uncertain():
+            raise ReconciliationError("Kindroid generation remains uncertain; synchronize before continuing")
+        with self.phase_context(
+            WorkerPhase.WAITING_FOR_KINDROID,
+            "Requesting the next Kindroid turn",
+        ):
+            ai_id = self.kindroid.get_turn(
+                self.settings.group_id, allow_user=allow_user
+            )
+            if not ai_id:
+                logger.info("Kindroid returned the user turn")
+                return None
+            display_name = self.state.turns.expected_display_name(
+                self.settings.group_id, ai_id, self.settings.kindroid_display_name
+            )
+            turn_id = self.state.turns.begin(self.settings.group_id, ai_id,
+                display_name, outbox_id,
+                self.state.get_int("cursor_timestamp", 0))
+            failure_stage = "request"
+            try:
+                body = self.kindroid.generate_ai_response(self.settings.group_id, ai_id)
+                failure_stage = "capture"
+                message = self.state.turns.complete(turn_id, body)
+            except Exception as exc:
+                self.state.turns.mark_uncertain(turn_id)
+                if isinstance(exc, EmptyGeneratedReply):
+                    self._event(
+                        "generation_history_fallback", ActivitySeverity.WARNING,
+                        "Kindroid returned no reply text; synchronizing history once",
+                        details={"outbox_id": outbox_id, "outcome": "started"},
+                        correlation_id=outbox_id,
+                    )
+                    try:
+                        # Generation has already happened. Fetch the existing
+                        # reply through the budgeted history boundary, never by
+                        # repeating generation or polling in a loop.
+                        self.synchronize_context()
+                    except HistoryCooldownError:
+                        self._event(
+                            "generation_history_fallback", ActivitySeverity.WARNING,
+                            "Reply recovery deferred until the history cooldown ends",
+                            details={"outbox_id": outbox_id, "outcome": "cooldown"},
+                            correlation_id=outbox_id,
+                        )
+                        raise
+                    except Exception as recovery_error:
+                        recovery_type = type(recovery_error).__name__
+                        if recovery_type not in {
+                            "ReconciliationError", "ReconciliationPending", "KindroidAPIError",
+                            "OperationalError", "IntegrityError", "RuntimeError",
+                        }:
+                            recovery_type = "UnexpectedError"
+                        self._event(
+                            "generation_history_fallback", ActivitySeverity.ERROR,
+                            "History did not safely confirm the generated reply",
+                            details={"outbox_id": outbox_id, "outcome": "failed",
+                                     "error_type": recovery_type},
+                            correlation_id=outbox_id,
+                        )
+                        # Keep uncertainty and report the original cause below.
+                    else:
+                        message = self.state.turns.message(turn_id)
+                        self._event(
+                            "generation_history_fallback", ActivitySeverity.INFO,
+                            "Existing Kindroid reply recovered from history",
+                            details={"outbox_id": outbox_id, "outcome": "recovered",
+                                     "message_id": message.id},
+                            correlation_id=outbox_id,
+                        )
+                        self._event(
+                            "message_received", ActivitySeverity.INFO,
+                            "Kindroid reply received through history recovery",
+                            details={"message_id": message.id, "sender_type": "ai"},
+                            correlation_id=message.id,
+                        )
+                        self._schedule_initiative()
+                        return message
+                error_type = type(exc).__name__
+                if error_type not in {
+                    "KindroidAPIError", "EmptyGeneratedReply", "ReconciliationError",
+                    "OperationalError", "IntegrityError", "DatabaseError",
+                    "RuntimeError", "ValueError", "TypeError", "OSError",
+                    "TimeoutError",
+                }:
+                    error_type = "UnexpectedError"
+                if isinstance(exc, EmptyGeneratedReply):
+                    cause = "empty response after successful HTTP request"
+                elif isinstance(exc, KindroidAPIError):
+                    cause = (f"HTTP {exc.status_code}" if exc.status_code is not None
+                             else "network request failed")
+                else:
+                    cause = f"{failure_stage} failed: {error_type}"
+                details = {"outbox_id": outbox_id, "error_type": error_type,
+                           "failure_stage": failure_stage}
+                if isinstance(exc, KindroidAPIError):
+                    details["http_status"] = exc.status_code
+                self._event("generation_uncertain", ActivitySeverity.ERROR,
+                            f"Kindroid generation uncertain: {cause}",
+                            details=details, correlation_id=outbox_id)
+                self._pause(f"Kindroid generation outcome is uncertain ({cause}); synchronize history before continuing",
+                            "Relay paused for uncertain Kindroid generation")
+                # Retain only allow-listed type/stage/status; never the raw
+                # exception, response body, URL, headers, or request content.
+                raise ReconciliationError(f"Kindroid generation outcome is uncertain ({cause})") from None
+        self._event("message_received", ActivitySeverity.INFO, "Kindroid reply received directly",
+                    details={"message_id": message.id, "sender_type": "ai"}, correlation_id=message.id)
+        self._schedule_initiative()
+        return message
 
     def _schedule_initiative(self, *, base_at: int | None = None) -> None:
         if not self.settings.initiative_enabled:
@@ -451,8 +820,26 @@ class Relay:
         # Kindroid currently returns milliseconds, but accept seconds as well.
         return timestamp // 1000 if timestamp > 10_000_000_000 else timestamp
 
-    def _maybe_offer_initiative(self) -> bool:
+    def _set_initiative_outcome(self, outcome: str) -> None:
+        self.initiative_outcome = outcome
+        if outcome in NON_SPENDING_INITIATIVE_OUTCOMES:
+            self.state.record_initiative_check(self.state.initiative_limit(self.settings.initiative_max_checks_24h), outcome)
+        else:
+            self.state.update_latest_initiative_outcome(outcome)
+
+    def _skip_initiative(self, outcome: str, summary: str, *, persist: bool = True) -> bool:
+        self.initiative_outcome = outcome
+        if persist:
+            self._set_initiative_outcome(outcome)
+        logger.info(summary)
+        self._event("initiative_skipped", ActivitySeverity.INFO, summary, details={"outcome": outcome})
+        return False
+
+    def _maybe_offer_initiative(self, *, force_due: bool = False) -> bool:
         if not self.settings.initiative_enabled or self.state.is_paused():
+            if force_due:
+                outcome = "paused" if self.state.is_paused() else "disabled"
+                return self._skip_initiative(outcome, f"Check-in skipped: {outcome}", persist=False)
             return False
         now = int(time.time())
         if (
@@ -469,63 +856,122 @@ class Relay:
                 base_at=self._message_epoch_seconds(latest) if latest else None
             )
             due_at = self.state.get_int("initiative_due_at", 0)
-        if now < due_at:
+        if not force_due and now < due_at:
             return False
-        if self.settings.initiative_schedule_hours and now > due_at + 90:
+        if not force_due and self.settings.initiative_schedule_hours and now > due_at + 90:
             self.state.record_initiative_check(
-                self.settings.initiative_max_checks_24h, "missed"
+                self.state.initiative_limit(self.settings.initiative_max_checks_24h), "missed"
             )
             self._schedule_initiative()
+            self.initiative_outcome = "missed"
             logger.info("Initiative check skipped because its scheduled time was missed")
+            self._event(
+                "initiative_skipped",
+                ActivitySeverity.INFO,
+                "Initiative check skipped because its scheduled time was missed",
+                details={"outcome": "missed"},
+            )
             return False
-        if not self.state.record_initiative_check(
-            self.settings.initiative_max_checks_24h, "started"
-        ):
-            self._schedule_initiative()
-            return False
-
+        self._event(
+            "initiative_due",
+            ActivitySeverity.INFO,
+            "Initiative check became due",
+        )
         self._schedule_initiative()
         if self.state.pending_ai_messages():
-            self.state.update_latest_initiative_outcome("pending_message")
+            self._set_initiative_outcome("pending_message")
             logger.info("Initiative check skipped because Hannah already has a pending message")
+            self._event(
+                "initiative_skipped",
+                ActivitySeverity.INFO,
+                "Initiative check skipped because a Hannah message is pending",
+                details={"outcome": "pending_message"},
+            )
             return False
         latest = self.state.latest_message()
         if latest is None:
-            self.state.update_latest_initiative_outcome("empty_room")
+            self._set_initiative_outcome("empty_room")
+            self._event(
+                "initiative_skipped",
+                ActivitySeverity.INFO,
+                "Initiative check skipped because the room is empty",
+                details={"outcome": "empty_room"},
+            )
             return False
         if latest.sender_type != "user" or (
             latest.display_name.casefold()
             != self.settings.codex_display_name.casefold()
+            and not self.state.is_known_outbound(latest.message)
         ):
-            self.state.update_latest_initiative_outcome("latest_not_codex")
+            self._set_initiative_outcome("latest_not_codex")
             logger.info("Initiative check skipped because Codex was not the latest speaker")
+            self._event(
+                "initiative_skipped",
+                ActivitySeverity.INFO,
+                "Initiative check skipped because Codex was not the latest speaker",
+                details={"outcome": "latest_not_codex"},
+            )
             return False
         if self._inside_quiet_hours():
-            self.state.update_latest_initiative_outcome("quiet_hours")
+            self._set_initiative_outcome("quiet_hours")
             logger.info("Initiative check skipped during configured quiet hours")
+            self._event(
+                "initiative_skipped",
+                ActivitySeverity.INFO,
+                "Initiative check skipped during quiet hours",
+                details={"outcome": "quiet_hours"},
+            )
             return False
+        # Reserve only once eligibility checks pass, before Codex/remote work.
+        # Failed or uncertain attempts remain charged to bound repeated failures.
+        if not self.state.record_initiative_check(
+            self.state.initiative_limit(self.settings.initiative_max_checks_24h), "started"
+        ):
+            return self._skip_initiative("daily_budget", "Initiative check skipped because its daily budget was exhausted", persist=False)
         logger.info("Initiative check: sending a Codex check-in to Hannah")
-        with self.agent_factory() as agent:
-            check_in = agent.scheduled_check_in(latest)  # type: ignore[attr-defined]
-        self._send_user_message(self._limit_reply(check_in))
-        self.state.update_latest_initiative_outcome("check_in_sent")
+        with self._agent_session(latest.id) as agent:
+            check_in = cast(
+                str,
+                self._call_codex(
+                    "scheduled check-in",
+                    lambda: agent.scheduled_check_in(latest),  # type: ignore[attr-defined]
+                    details={"message_id": latest.id},
+                    correlation_id=latest.id,
+                ),
+            )
+        outbox_id = self._send_user_message(self._limit_reply(check_in))
+        self._set_initiative_outcome("check_in_sent")
+        self._event(
+            "initiative_offered",
+            ActivitySeverity.INFO,
+            "Scheduled check-in offered to Hannah",
+            details={"outcome": "check_in_sent"},
+        )
 
         try:
-            message = self._request_ai_turn(allow_user=True)
+            message = self._request_ai_turn(outbox_id=outbox_id, allow_user=True)
         except HistoryCooldownError:
-            self.state.update_latest_initiative_outcome(
-                "check_in_waiting_for_history"
-            )
-            logger.warning(
-                "Initiative response will be synchronized after the history cooldown"
-            )
+            self._set_initiative_outcome("check_in_waiting_for_history")
             return False
         if message is None:
-            self.state.update_latest_initiative_outcome("check_in_sent_user_turn")
+            self._set_initiative_outcome("check_in_sent_user_turn")
             logger.info("Hannah did not take the offered check-in turn")
+            self._event(
+                "initiative_declined",
+                ActivitySeverity.INFO,
+                "Hannah did not take the offered check-in turn",
+                details={"outcome": "user_turn"},
+            )
             return False
-        self.state.update_latest_initiative_outcome("check_in_answered")
+        self._set_initiative_outcome("check_in_answered")
         logger.info("Hannah answered the scheduled check-in")
+        self._event(
+            "initiative_answered",
+            ActivitySeverity.INFO,
+            "Hannah answered the scheduled check-in",
+            details={"message_id": message.id, "outcome": "answered"},
+            correlation_id=message.id,
+        )
         return True
 
     def _inside_quiet_hours(self) -> bool:
@@ -582,14 +1028,8 @@ class Relay:
     def post_execution_result(self, body: str) -> None:
         if not body:
             return
-        self._send_user_message(self._limit_reply(body))
-        ai_id = self.kindroid.get_turn(self.settings.group_id, allow_user=False)
-        if ai_id:
-            self.kindroid.generate_ai_response(self.settings.group_id, ai_id)
-            try:
-                self.sync_history()
-            except HistoryCooldownError:
-                logger.warning(
-                    "Approval result response will be synchronized after the "
-                    "history cooldown"
-                )
+        outbox_id = self._send_user_message(self._limit_reply(body))
+        try:
+            self._request_ai_turn(outbox_id=outbox_id, allow_user=False)
+        except HistoryCooldownError:
+            logger.info("Approval result reply will be recovered after the history cooldown")

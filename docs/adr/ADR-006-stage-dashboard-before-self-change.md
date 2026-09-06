@@ -28,6 +28,12 @@ write Kindroid configuration.
 The formal confirmation protocol is preserved as a later design and must be
 implemented before automated self-change.
 
+Refinement (2026-09-06): [ADR-009](ADR-009-agent-context-memory.md) inserted
+Milestone 6A, agent context memory, after dashboard release and before exploration.
+This memory supports Codex's understanding and assistance; it is not Hannah's
+canonical identity and does not require the deferred self-change ceremony merely
+to retain attributed statements. The dashboard release gate remains in place.
+
 ## Consequences
 
 - (+) Later agency behavior will be observable and recoverable from its beginning.
@@ -38,4 +44,3 @@ implemented before automated self-change.
   exists.
 - (neutral) The product gains operational value before the complete agency vision
   is implemented.
-

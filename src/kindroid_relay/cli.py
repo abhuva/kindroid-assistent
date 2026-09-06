@@ -16,7 +16,9 @@ from .application import (
     resume_relay,
 )
 from .codex_agent import CodexAgent
+from .backup import BACKUP_NOTICE, BackupError, backup_database, check_integrity
 from .config import ConfigurationError, Settings
+from .diagnostics import DiagnosticError, REVIEW_NOTICE, export_diagnostics
 from .kindroid_api import KindroidClient
 from .server import serve_dashboard
 from .state import (
@@ -48,6 +50,12 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("run", help="Run continuously")
     sub.add_parser("serve", help="Run the relay with its local web dashboard")
     sub.add_parser("status", help="Show local relay state")
+    diagnostics = sub.add_parser("diagnostics", help="Export bounded, privacy-filtered local diagnostics")
+    diagnostics.add_argument("--output", required=True, type=Path, help="New JSON destination; never overwritten")
+    backup = sub.add_parser("backup", help="Create a private online SQLite backup")
+    backup.add_argument("--output", required=True, type=Path, help="New backup directory; parent must exist")
+    integrity = sub.add_parser("integrity", help="Check SQLite integrity without migration or relay work")
+    integrity.add_argument("--database", type=Path, help="Check a separate database without loading relay configuration")
 
     pause = sub.add_parser("pause", help="Pause automatic replies")
     pause.add_argument("reason", nargs="?", default="paused locally")
@@ -125,11 +133,33 @@ def _list_approvals(state: RelayState, include_all: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "integrity" and args.database is not None:
+        return _print_integrity(args.database)
     try:
         settings = Settings.load(args.env_file)
     except ConfigurationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
+    if args.command == "integrity":
+        return _print_integrity(settings.state_path)
+    if args.command == "backup":
+        try:
+            output = backup_database(settings.state_path, args.output)
+        except BackupError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"Backup saved to {output}")
+        print(BACKUP_NOTICE)
+        return 0
+    if args.command == "diagnostics":
+        try:
+            output = export_diagnostics(settings.state_path, settings.log_path, args.output)
+        except DiagnosticError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"Diagnostics saved to {output}")
+        print(REVIEW_NOTICE)
+        return 0
     _configure_logging(settings)
 
     if args.command == "serve":
@@ -203,8 +233,9 @@ def main(argv: list[str] | None = None) -> int:
                         _print_status(state)
                         return 0
                     if args.command == "trigger":
-                        count = application.trigger_initiative()
-                        print(f"Manual initiative trigger handled {count} conversation chain(s).")
+                        result = application.trigger_initiative()
+                        print(f"Manual check-in outcome: {result['initiative_outcome']}; "
+                              f"handled {result['handled']} conversation chain(s).")
                         _print_status(state)
                         return 0
                     if args.command == "start-conversation":
@@ -238,6 +269,15 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         logging.getLogger(__name__).exception("Command failed")
         print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _print_integrity(path: Path) -> int:
+    try:
+        print(json.dumps(check_integrity(path), indent=2, sort_keys=True))
+    except BackupError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
     return 0
 

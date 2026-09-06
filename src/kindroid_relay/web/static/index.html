@@ -7,77 +7,131 @@
   <meta name="relay-poll-ms" content="{{POLL_MS}}">
   <title>Kindroid Relay</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/api-client.js" defer></script>
+  <script src="/static/ui-model.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#controls-heading">Skip to controls</a>
   <main>
     <header class="topbar">
-      <div>
-        <p class="eyebrow">LOCAL RELAY</p>
+      <div class="brand">
         <h1>Kindroid × Codex</h1>
+        <span class="muted">local relay</span>
       </div>
       <div id="connection" class="badge neutral" role="status">Connecting…</div>
     </header>
 
     <section class="panel status-panel" aria-labelledby="status-heading">
-      <div>
-        <p class="eyebrow" id="status-heading">STATUS</p>
-        <p id="relay-state" class="hero-state">Loading</p>
+      <div class="status-summary">
+        <h2 id="status-heading" class="sr-only">Relay status</h2>
+        <p id="relay-state" class="relay-state">Loading</p>
         <p id="worker-note" class="muted">Waiting for the relay worker.</p>
       </div>
       <dl class="status-grid">
         <div><dt>Worker</dt><dd id="worker-phase">—</dd></div>
-        <div><dt>Next initiative</dt><dd id="next-initiative">—</dd></div>
-        <div><dt>History budget</dt><dd id="history-budget">—</dd></div>
+        <div><dt>Last heartbeat</dt><dd><time id="worker-heartbeat">—</time></dd></div>
+        <div><dt>Next initiative</dt><dd><time id="next-initiative">—</time></dd></div>
+        <div><dt>Last initiative</dt><dd id="last-initiative">—</dd></div>
+        <div><dt>Schedule</dt><dd id="initiative-schedule">—</dd></div>
+        <div><dt>Quiet hours</dt><dd id="quiet-hours">—</dd></div>
+        <div><dt>History budget</dt><dd><span id="history-budget">—</span><small id="history-budget-note" class="quota-note"></small></dd></div>
         <div><dt>History API</dt><dd id="history-api">—</dd></div>
         <div><dt>Last 429</dt><dd id="last-429">—</dd></div>
         <div><dt>Turns</dt><dd id="turn-count">—</dd></div>
       </dl>
     </section>
 
+    <div class="workspace">
+    <div class="operations">
     <section class="panel" aria-labelledby="controls-heading">
-      <p class="eyebrow" id="controls-heading">CONTROLS</p>
+      <h2 id="controls-heading" tabindex="-1">Controls</h2>
       <div class="controls">
-        <button id="start-conversation" type="button">Start conversation</button>
-        <button id="trigger-initiative" type="button" class="secondary">Trigger check-in</button>
+        <div class="control-action">
+          <button id="start-conversation" type="button">Start conversation</button>
+          <span id="start-conversation-status" class="control-status" aria-live="polite"></span>
+        </div>
+        <div class="control-action">
+          <button id="trigger-initiative" type="button" class="secondary">Trigger check-in</button>
+          <span id="trigger-initiative-status" class="control-status" aria-live="polite"></span>
+        </div>
         <button id="pause-relay" type="button" class="danger">Pause</button>
-        <button id="resume-relay" type="button" class="secondary">Resume</button>
+        <div class="control-action">
+          <button id="resume-relay" type="button" class="secondary">Resume</button>
+          <span id="resume-status" class="control-status" aria-live="polite"></span>
+        </div>
       </div>
-      <p id="command-status" class="muted" aria-live="polite">No dashboard command running.</p>
+      <p id="command-status" class="command-summary muted" aria-live="polite">No dashboard command running.</p>
+      <p id="action-error" role="alert"></p>
+      <button id="retry-action" type="button" class="secondary" hidden>Retry the same request</button>
+      <details class="command-history">
+        <summary>Recent commands</summary>
+        <ol id="command-list" class="stack" aria-label="Recent dashboard commands"></ol>
+      </details>
     </section>
 
-    <div class="columns">
-      <section class="panel" aria-labelledby="activity-heading">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">EVENTS</p>
-            <h2 id="activity-heading">Recent activity</h2>
-          </div>
-        </div>
-        <ol id="activity-list" class="feed"></ol>
-      </section>
+    <section class="panel" aria-labelledby="initiative-budget-heading">
+      <h2 id="initiative-budget-heading">Check-in budget</h2>
+      <p id="initiative-budget" role="status">Loading check-in budget.</p>
+      <p id="initiative-availability" class="muted"></p>
+      <form id="initiative-limit-form" class="filters">
+        <label for="initiative-limit">Daily limit (1–1000)
+          <input id="initiative-limit" type="number" min="1" max="1000" step="1" required aria-describedby="initiative-limit-note">
+        </label>
+        <button id="save-initiative-limit" type="submit" class="secondary">Save limit</button>
+        <span id="initiative-limit-status" class="control-status" aria-live="polite"></span>
+      </form>
+      <details class="budget-help">
+        <summary>Budget rules</summary>
+        <p id="initiative-limit-note" class="muted">Rolling 24 hours, shared by scheduled and manual check-ins. Eligibility skips do not count; failed or uncertain attempts after work starts do. Saving persists locally and applies when the worker processes the command. This does not change Kindroid API limits or resume a paused relay.</p>
+      </details>
+    </section>
+
+    <section class="panel" aria-labelledby="current-heading">
+      <h2 id="current-heading">Current activity</h2>
+      <p id="current-activity">Waiting for status.</p>
+      <p id="current-elapsed" class="muted"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="delivery-heading">
+      <h2 id="delivery-heading">Delivery health</h2>
+      <p id="delivery-status" role="status">Loading delivery status.</p>
+      <p id="delivery-explanation" hidden>Delivery may already have reached Kindroid. Automatic retry is disabled to prevent duplicate messages. Inspect the linked activity and source before resuming.</p>
+      <div id="delivery-list" class="stack"></div>
+    </section>
 
       <section class="panel" aria-labelledby="approvals-heading">
         <div class="panel-heading">
-          <div>
-            <p class="eyebrow">REVIEW</p>
-            <h2 id="approvals-heading">Pending approvals</h2>
-          </div>
+            <h2 id="approvals-heading">Approvals</h2>
+        <label>Status <select id="approval-filter"><option value="pending">Pending</option><option value="">All recent</option><option value="executed">Executed</option><option value="rejected">Rejected</option><option value="failed">Failed</option></select></label>
         </div>
         <div id="approval-list" class="stack"></div>
       </section>
     </div>
 
-    <section class="panel" aria-labelledby="messages-heading">
+    <section class="panel activity-panel" aria-labelledby="activity-heading">
+      <div class="panel-heading"><h2 id="activity-heading">Activity</h2></div>
+      <div class="filters">
+        <label>Severity <select id="activity-severity"><option value="">All severities</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option></select></label>
+        <label>Kind <select id="activity-kind"><option value="">All kinds</option></select></label>
+        <label>Related ID <input id="activity-related" type="search" maxlength="256"></label>
+      </div>
+      <p id="activity-empty" class="muted" hidden>No matching events in the retained feed.</p>
+      <ol id="activity-list" class="feed" tabindex="0" aria-label="Activity feed"></ol>
+    </section>
+
+    <section class="panel messages-panel" aria-labelledby="messages-heading">
       <div class="panel-heading">
-        <div>
-          <p class="eyebrow">GROUP CHAT</p>
-          <h2 id="messages-heading">Recent messages</h2>
-        </div>
+        <h2 id="messages-heading">Messages</h2>
         <button id="refresh-messages" type="button" class="text-button">Refresh</button>
       </div>
-      <div id="message-list" class="messages"></div>
+      <div id="message-list" class="messages" tabindex="0" role="region" aria-label="Group messages"></div>
+      <div class="message-pagination">
+      <button id="older-messages" type="button" class="secondary" disabled>Load older messages</button>
+      <p id="message-page-note" class="muted"></p>
+      </div>
     </section>
+    </div>
 
     <details class="panel diagnostics">
       <summary>Diagnostic log</summary>
@@ -86,6 +140,7 @@
         <button id="refresh-log" type="button" class="text-button">Refresh</button>
       </div>
       <pre id="log-tail" tabindex="0">Log not loaded.</pre>
+      <p id="log-note" class="muted"></p>
     </details>
   </main>
 
@@ -101,10 +156,31 @@
       </dl>
       <label class="check"><input id="approval-post-result" type="checkbox"> Post the result back to the group</label>
       <div class="dialog-actions">
-        <button value="cancel" class="secondary">Cancel</button>
-        <button id="reject-approval" value="reject" class="danger">Reject</button>
-        <button id="execute-approval" value="execute">Execute exactly this action</button>
+        <button value="cancel" class="secondary" autofocus>Cancel</button>
+        <button id="reject-approval" type="button" class="danger">Review rejection</button>
+        <button id="execute-approval" type="button">Review execution</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <h2 id="confirm-title">Confirm action</h2>
+      <p id="confirm-summary"></p>
+      <pre id="confirm-instruction"></pre>
+      <p id="confirm-scope"></p>
+      <p id="confirm-error" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="secondary" autofocus>Back</button>
+        <button id="confirm-action" type="button">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="detail-dialog" aria-labelledby="detail-title">
+    <form method="dialog"><h2 id="detail-title">Related record</h2>
+      <pre id="detail-body"></pre><div id="detail-links"></div>
+      <button value="close" autofocus>Close</button>
     </form>
   </dialog>
 

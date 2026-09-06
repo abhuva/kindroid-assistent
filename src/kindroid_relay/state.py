@@ -14,6 +14,15 @@ from .models import ActionProposal, ChatMessage
 from .migrations import migrate_database, open_database, require_current_schema
 from .activity import ActivityStore, WorkerStatusStore
 from .command_queue import CommandStore
+from .config import DASHBOARD_INITIATIVE_LIMIT_MAX
+from .turns import TurnStore
+
+
+NON_SPENDING_INITIATIVE_OUTCOMES = (
+    "missed", "pending_message", "empty_room", "latest_not_codex", "quiet_hours",
+    "paused", "disabled", "bootstrapped", "daily_budget",
+)
+_SPENDING_INITIATIVE_SQL = "outcome NOT IN (" + ",".join("?" for _ in NON_SPENDING_INITIATIVE_OUTCOMES) + ")"
 
 
 class RelayAlreadyRunning(RuntimeError):
@@ -127,6 +136,7 @@ class RelayState:
         self.commands = CommandStore(self.connection)
         self.activity = ActivityStore(self.connection)
         self.worker_status = WorkerStatusStore(self.connection)
+        self.turns = TurnStore(self.connection)
 
     def close(self) -> None:
         self.connection.close()
@@ -198,8 +208,8 @@ class RelayState:
                 """
                 INSERT OR IGNORE INTO messages(
                     remote_id, group_id, sender, sender_type, display_name,
-                    timestamp, body, processed, received_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    timestamp, body, processed, received_at, kindroid_id
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.id,
@@ -211,6 +221,7 @@ class RelayState:
                     message.message,
                     int(processed),
                     int(time.time()),
+                    message.id,
                 ),
             )
         return cursor.rowcount == 1
@@ -391,10 +402,8 @@ class RelayState:
             self.connection.execute(
                 "DELETE FROM initiative_checks WHERE checked_at <= ?", (cutoff,)
             )
-            count = self.connection.execute(
-                "SELECT COUNT(*) FROM initiative_checks"
-            ).fetchone()[0]
-            if count >= maximum:
+            count = self.initiative_check_count()
+            if outcome not in NON_SPENDING_INITIATIVE_OUTCOMES and count >= maximum:
                 return False
             self.connection.execute(
                 "INSERT INTO initiative_checks(checked_at, outcome) VALUES(?, ?)",
@@ -417,9 +426,34 @@ class RelayState:
         cutoff = int(time.time()) - 86400
         return int(
             self.connection.execute(
-                "SELECT COUNT(*) FROM initiative_checks WHERE checked_at > ?", (cutoff,)
+                "SELECT COUNT(*) FROM initiative_checks WHERE checked_at > ? AND " + _SPENDING_INITIATIVE_SQL,
+                (cutoff, *NON_SPENDING_INITIATIVE_OUTCOMES),
             ).fetchone()[0]
         )
+
+    def initiative_limit(self, configured: int) -> int:
+        raw = self.get_meta("initiative_limit_override")
+        try:
+            value = int(raw) if raw is not None else configured
+        except ValueError:
+            return configured
+        return value if raw is None or 1 <= value <= DASHBOARD_INITIATIVE_LIMIT_MAX else configured
+
+    def initiative_budget(self, configured: int) -> dict[str, object]:
+        now = int(time.time())
+        limit = self.initiative_limit(configured)
+        # Use one ordered read so count and availability agree even around expiry.
+        rows = self.connection.execute(
+            "SELECT checked_at FROM initiative_checks WHERE checked_at > ? AND "
+            + _SPENDING_INITIATIVE_SQL + " ORDER BY checked_at, rowid",
+            (now - 86400, *NON_SPENDING_INITIATIVE_OUTCOMES),
+        ).fetchall()
+        used = len(rows)
+        return {
+            "used": used, "limit": limit,
+            "available_at": int(rows[used - limit][0]) + 86400 if used >= limit else None,
+            "source": "dashboard" if self.get_meta("initiative_limit_override") == str(limit) else "configuration",
+        }
 
     def status(self) -> dict[str, object]:
         now = int(time.time())
@@ -457,6 +491,9 @@ class RelayState:
             ) > now,
             "initiative_checks_24h": self.initiative_check_count(),
             "initiative_due_at": self.get_int("initiative_due_at", 0),
+            "initiative_schedule_basis": self.get_meta(
+                "initiative_schedule_basis", ""
+            ),
             "last_initiative_check_at": (
                 int(last_initiative["checked_at"]) if last_initiative else 0
             ),

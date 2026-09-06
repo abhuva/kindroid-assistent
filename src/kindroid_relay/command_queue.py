@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Any
 
 from .redaction import redact_text
+from .config import DASHBOARD_INITIATIVE_LIMIT_MAX
 
 
 class CommandType(str, Enum):
@@ -17,6 +18,7 @@ class CommandType(str, Enum):
     RESUME = "resume"
     EXECUTE_APPROVAL = "execute_approval"
     REJECT_APPROVAL = "reject_approval"
+    SET_INITIATIVE_LIMIT = "set_initiative_limit"
 
 
 class CommandStatus(str, Enum):
@@ -66,6 +68,7 @@ SINGLE_ACTIVE_COMMANDS = frozenset(
         CommandType.START_CONVERSATION,
         CommandType.TRIGGER_INITIATIVE,
         CommandType.RESUME,
+        CommandType.SET_INITIATIVE_LIMIT,
     }
 )
 
@@ -96,6 +99,11 @@ def validate_payload(
     payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
     value = dict(payload or {})
+    if command_type == CommandType.SET_INITIATIVE_LIMIT:
+        limit = value.get("limit")
+        if set(value) != {"limit"} or type(limit) is not int or not 1 <= limit <= DASHBOARD_INITIATIVE_LIMIT_MAX:
+            raise CommandValidationError(f"initiative limit must be an integer from 1 to {DASHBOARD_INITIATIVE_LIMIT_MAX}")
+        return {"limit": limit}
     if command_type in {
         CommandType.START_CONVERSATION,
         CommandType.TRIGGER_INITIATIVE,
@@ -175,6 +183,8 @@ class CommandStore:
                 (idempotency_key,),
             ).fetchone()
             if existing is not None:
+                if existing["command_type"] != command_type.value or existing["payload_json"] != serialized:
+                    raise CommandConflictError("idempotency key already belongs to a different action")
                 self.connection.commit()
                 return self._record(existing), False
 

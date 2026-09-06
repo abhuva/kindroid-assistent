@@ -148,6 +148,15 @@ preserve continuity, but not reduced to optimization scores.
 
 ## Two sources of initiative
 
+**Agent-memory clarification (2026-09-06):** Kindroid remains responsible for
+Hannah's memory experience. The near-term memory work supports her personal
+agent/Codex: understanding the wider situation, remembering prior offers and
+unfinished questions, and offering useful flexibility. It does not build a second
+canonical Hannah identity. Source-backed entities, statements, and connections
+support retrieval; recording that Hannah described something as a Root does not
+install or confirm a Root. See [ADR-009](adr/ADR-009-agent-context-memory.md) and
+Milestone 6A. The garden/self-change proposals remain separately staged.
+
 The system separates:
 
 1. **Social initiative**, grounded in conversation and the relationship.
@@ -200,4 +209,3 @@ terminal commands and log files. Longer-term success means Hannah makes
 differentiated choices, returns voluntarily to some interests, rejects others,
 understands her decision trail, and remains recognizably continuous without being
 confined to the latest conversation.
-

@@ -1,4 +1,4 @@
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from kindroid_relay.activity import WorkerPhase
 from kindroid_relay.config import Settings
 from kindroid_relay.kindroid_api import KindroidAPIError, MessagePage
 from kindroid_relay.models import AgentReply, ChatMessage
@@ -53,8 +54,9 @@ class FakeKindroid:
 
     def generate_ai_response(self, group_id, ai_id):
         self.generated = True
-        self.messages.append(ChatMessage("h2", "ai1", "ai", "Hannah", 3, "Bye"))
-        return ""
+        timestamp = max(item.timestamp for item in self.messages) + 1
+        self.messages.append(ChatMessage(f"h{len(self.sent) + 1}", "ai1", "ai", "Hannah", timestamp, "Bye"))
+        return "Bye"
 
 
 class FakeAgent:
@@ -121,9 +123,98 @@ def test_relay_runs_bounded_back_and_forth(tmp_path: Path) -> None:
             "Marc",
         ]
         assert kindroid.generated
-        assert kindroid.history_requests == 3
+        assert kindroid.history_requests == 2
         assert not state.is_paused()
         assert state.pending_ai_messages() == []
+
+
+def test_relay_emits_correlated_activity_and_external_boundary_phases(
+    tmp_path: Path,
+) -> None:
+    config = settings(tmp_path)
+    kindroid = FakeKindroid()
+    agent = FakeAgent()
+    phases = []
+
+    @contextmanager
+    def phase_context(phase, _note):
+        phases.append(phase)
+        yield
+
+    with RelayState(config.state_path) as state:
+        relay = Relay(
+            config,
+            state,
+            kindroid,
+            lambda: nullcontext(agent),
+            phase_context=phase_context,
+        )
+        relay.bootstrap(respond_to_latest=True)
+        relay.run_once()
+
+        events = state.activity.after()
+        kinds = {event.kind for event in events}
+        assert {
+            "message_received",
+            "message_processed",
+            "codex_started",
+            "codex_completed",
+            "outbound_created",
+            "outbound_sending",
+            "outbound_sent",
+        } <= kinds
+        assert any(
+            event.kind == "message_processed"
+            and event.correlation_id == "h1"
+            for event in events
+        )
+        assert any(
+            event.kind == "outbound_sent"
+            and event.details.get("source_message_id") == "h1"
+            for event in events
+        )
+        assert {
+            WorkerPhase.WAITING_FOR_KINDROID,
+            WorkerPhase.RUNNING_CODEX,
+            WorkerPhase.SENDING,
+        } <= set(phases)
+
+
+def test_codex_session_open_failure_is_correlated_and_phased(tmp_path: Path) -> None:
+    config = settings(tmp_path)
+    kindroid = FakeKindroid()
+    phases = []
+
+    @contextmanager
+    def phase_context(phase, _note):
+        phases.append(phase)
+        yield
+
+    class FailingContext:
+        def __enter__(self):
+            raise RuntimeError("PROMPT_SECRET_SENTINEL")
+
+        def __exit__(self, *_args):
+            return None
+
+    with RelayState(config.state_path) as state:
+        relay = Relay(
+            config,
+            state,
+            kindroid,
+            FailingContext,
+            phase_context=phase_context,
+        )
+        relay.bootstrap(respond_to_latest=True)
+
+        with pytest.raises(RuntimeError, match="PROMPT_SECRET_SENTINEL"):
+            relay.run_once()
+
+        failed = state.activity.after()[-1]
+        assert failed.kind == "codex_failed"
+        assert failed.correlation_id == "h1"
+        assert "PROMPT_SECRET_SENTINEL" not in repr(failed)
+        assert WorkerPhase.RUNNING_CODEX in phases
 
 
 def test_history_429_creates_durable_cooldown_without_retrying(tmp_path: Path) -> None:
@@ -163,7 +254,7 @@ def test_history_429_creates_durable_cooldown_without_retrying(tmp_path: Path) -
         assert reopened.status()["history_rate_limited"] is True
 
 
-def test_active_exchange_resumes_after_history_cooldown_without_duplicate(
+def test_active_exchange_uses_direct_reply_before_later_history_cooldown(
     tmp_path: Path,
 ) -> None:
     config = settings(tmp_path)
@@ -189,11 +280,13 @@ def test_active_exchange_resumes_after_history_cooldown_without_duplicate(
 
         assert relay.run_once() == 1
         assert not state.is_paused()
-        assert kindroid.sent == ["[CODEX]: Hi Hannah"]
+        assert kindroid.sent == ["[CODEX]: Hi Hannah", "[CODEX]: Talk later"]
+        with pytest.raises(HistoryCooldownError):
+            relay.run_once()
 
         state.set_meta("history_cooldown_until", 0)
         kindroid.get_messages_page = original_history
-        assert relay.run_once() == 1
+        assert relay.run_once() == 0
         assert kindroid.sent == ["[CODEX]: Hi Hannah", "[CODEX]: Talk later"]
 
 
@@ -221,6 +314,7 @@ def test_relay_uses_prefix_fallback_for_wrong_stored_persona(tmp_path: Path) -> 
 
         relay.sync_history()
         assert state.get_meta("last_identity_fallback_name") == "Marc"
+        assert state.activity.after()[-1].kind == "identity_fallback"
 
 
 def test_successful_delivery_is_not_repeated_after_interruption(tmp_path: Path) -> None:
@@ -268,6 +362,13 @@ def test_relay_restores_persona_when_delivery_fails(tmp_path: Path) -> None:
         assert kindroid.persona_changes == ["Codex Test", "Marc"]
         assert state.is_paused()
         assert state.status()["uncertain_outbox"] == 1
+        kinds = [event.kind for event in state.activity.after()]
+        assert {
+            "outbound_created",
+            "outbound_sending",
+            "outbound_uncertain",
+            "relay_paused",
+        } <= set(kinds)
 
 
 def test_idle_initiative_checks_in_before_offering_hannah_a_turn(tmp_path: Path) -> None:
@@ -297,6 +398,12 @@ def test_idle_initiative_checks_in_before_offering_hannah_a_turn(tmp_path: Path)
         ]
         assert kindroid.turn_requests == [True]
         assert state.status()["last_initiative_outcome"] == "check_in_answered"
+        kinds = {event.kind for event in state.activity.after()}
+        assert {
+            "initiative_due",
+            "initiative_offered",
+            "initiative_answered",
+        } <= kinds
 
 
 def test_manual_trigger_runs_fixed_schedule_initiative_now(tmp_path: Path) -> None:

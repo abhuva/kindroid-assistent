@@ -7,6 +7,9 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+DEFAULT_INITIATIVE_LIMIT = 50
+DASHBOARD_INITIATIVE_LIMIT_MAX = 1000
+
 
 class ConfigurationError(ValueError):
     pass
@@ -125,6 +128,7 @@ class Settings:
     worker_stale_seconds: int = 20
     idle_poll_seconds: int = 600
     history_429_cooldown_seconds: int = 3600
+    activity_retention_days: int = 30
     log_max_bytes: int = 5_242_880
     log_backup_count: int = 5
 
@@ -217,7 +221,7 @@ class Settings:
                 values, "RELAY_INITIATIVE_JITTER_SECONDS", 0, 0
             ),
             initiative_max_checks_24h=_integer(
-                values, "RELAY_INITIATIVE_MAX_CHECKS_24H", 5, 1
+                values, "RELAY_INITIATIVE_MAX_CHECKS_24H", DEFAULT_INITIATIVE_LIMIT, 1
             ),
             initiative_quiet_hours=_quiet_hours(values),
             state_path=Path(
@@ -268,6 +272,9 @@ class Settings:
             ),
             history_429_cooldown_seconds=_integer(
                 values, "RELAY_HISTORY_429_COOLDOWN_SECONDS", 3600, 60
+            ),
+            activity_retention_days=_integer(
+                values, "RELAY_ACTIVITY_RETENTION_DAYS", 30, 1
             ),
             log_max_bytes=_integer(
                 values, "RELAY_LOG_MAX_BYTES", 5_242_880, 65_536

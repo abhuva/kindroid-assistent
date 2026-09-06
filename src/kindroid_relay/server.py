@@ -46,15 +46,20 @@ def _open_when_ready(server: uvicorn.Server, url: str) -> None:
 def _wait_for_worker_started(
     state_factory: RelayStateFactory,
     worker_thread: threading.Thread,
+    worker_failed: threading.Event | None = None,
     timeout: float = 10.0,
 ) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        with state_factory.connect() as state:
-            if state.worker_status.get() is not None:
-                return
+        if worker_failed is not None and worker_failed.is_set():
+            raise RuntimeError("relay worker failed during startup")
         if not worker_thread.is_alive():
             raise RuntimeError("relay worker stopped during startup")
+        with state_factory.connect() as state:
+            if state.worker_status.get() is not None:
+                if worker_failed is not None and worker_failed.is_set():
+                    raise RuntimeError("relay worker failed during startup")
+                return
         time.sleep(0.05)
     raise RuntimeError("relay worker did not become ready before timeout")
 
@@ -70,6 +75,7 @@ def serve_dashboard(settings: Settings) -> int:
         state_factory = RelayStateFactory(settings.state_path)
         wake_event = threading.Event()
         stop_event = threading.Event()
+        worker_failed = threading.Event()
         worker = RelayWorker(
             settings,
             wake_event=wake_event,
@@ -80,7 +86,12 @@ def serve_dashboard(settings: Settings) -> int:
             try:
                 worker.run()
             except Exception as exc:
-                logger.exception("Relay worker terminated unexpectedly")
+                worker_failed.set()
+                logger.error(
+                    "Relay worker terminated unexpectedly (%s): %s",
+                    exc.__class__.__name__,
+                    redact_text(exc, maximum=500),
+                )
                 try:
                     with state_factory.connect() as state:
                         state.worker_status.update(
@@ -112,20 +123,20 @@ def serve_dashboard(settings: Settings) -> int:
             )
         )
 
-        worker_thread.start()
-        _wait_for_worker_started(state_factory, worker_thread)
-        logger.info("Dashboard available at %s", url)
-        print(f"Dashboard: {url}")
         browser_thread = None
-        if settings.web_open_browser:
-            browser_thread = threading.Thread(
-                target=_open_when_ready,
-                args=(server, url),
-                name="kindroid-dashboard-browser",
-                daemon=True,
-            )
-            browser_thread.start()
+        worker_thread.start()
         try:
+            _wait_for_worker_started(state_factory, worker_thread, worker_failed)
+            logger.info("Dashboard available at %s", url)
+            print(f"Dashboard: {url}")
+            if settings.web_open_browser:
+                browser_thread = threading.Thread(
+                    target=_open_when_ready,
+                    args=(server, url),
+                    name="kindroid-dashboard-browser",
+                    daemon=True,
+                )
+                browser_thread.start()
             server.run()
         finally:
             worker.stop()

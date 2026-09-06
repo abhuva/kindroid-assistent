@@ -4,6 +4,15 @@
 **Purpose:** Implementation baseline; this describes shipped behavior, not the
 long-term design.
 
+**2026-09-06 operations update:** This remains a historical pre-dashboard baseline;
+the dependency/module/CLI lists below are not a complete inventory of the current
+host. See [README](../README.md) and [operations and recovery](operations.md) for
+`serve`, diagnostics, sign-in autostart, and the new `backup --output <new-directory>`
+and `integrity [--database <path>]` commands. Backup uses SQLite online snapshots
+with a schema/time/hash manifest; maintenance never migrates or runs relay work.
+Schema remains 3. Combined-host fake-adapter HTTP journeys now cover conversation,
+failure, reload, and restart behavior; live/browser release acceptance is pending.
+
 ## Repository state
 
 The active application is a Python package under `src/kindroid_relay`. The older
@@ -59,24 +68,30 @@ mutation cannot race a running server.
 ## Current database
 
 The database path defaults to `var/relay.sqlite3`. Connections enable WAL and
-foreign keys. Schema creation and small additive upgrades currently occur inside
-`RelayState._create_schema`; there is no numbered migration framework.
+foreign keys. Numbered transactional migrations in `migrations.py` now upgrade
+existing data; migration 3 adds direct-reply reconciliation. This storage section
+has been updated beyond the historical pre-dashboard snapshot above.
 
 ### Tables
 
 - `metadata`: string key/value runtime and scheduling state, including process
   flags, cursor, persistent Codex thread ID, and initiative timestamps.
-- `messages`: synchronized Kindroid history with remote ID primary key, speaker
+- `messages`: synchronized history and direct replies with stable record keys,
+  separate `kindroid_id` remote aliases (migration 3), speaker
   metadata, body, timestamps, and processed flag.
 - `outbox`: durable outbound body/hash, optional source message, desired follow-up,
   status, error, and timestamps.
 - `approvals`: proposed action, instruction, risk, status, result, and timestamps.
 - `history_requests`: rolling 24-hour local accounting for Kindroid history reads.
+- `generation_turns`: durable generation intent, outgoing-message anchor, selected
+  AI, and generating/received/uncertain/reconciled status.
 - `initiative_checks`: scheduled/check-in attempt times and outcomes.
 
 ### Important invariants
 
-- `messages.remote_id` deduplicates incoming history.
+- `messages.remote_id` is the stable record key (legacy column name);
+  `messages.kindroid_id` uniquely deduplicates incoming history. Reconciliation
+  preserves local keys, processed flags, and all source links.
 - A partial unique index permits only one outbox row per non-null source message.
 - A `sending` or `uncertain` outbox entry is considered known outbound and is not
   implicitly retried.
@@ -138,9 +153,22 @@ a local summary, and an optional group reply.
    Marc's persona.
 8. Mark delivery sent only after the POST succeeds.
 9. If Codex requests continuation, ask Kindroid for a turn and generate the selected
-   AI response.
+   AI response. Save generation intent before HTTP, then atomically record the
+   returned text and received status. Pass this direct reply to Codex immediately.
 10. Stop when Codex closes naturally, Kindroid yields the user turn, pause is set,
     an error occurs, or the configured consecutive-turn maximum is reached.
+
+History synchronizes at cycle entry, before openers/check-ins and approved
+execution, and before the next Codex turn when a long exchange crosses
+`RELAY_POLL_SECONDS`. All Codex invocations receive a bounded recent local snapshot,
+even on seeded threads. History binds remote aliases using outgoing anchors and
+unique reply matches; missing records defer context work, while ambiguous or
+uncertain outcomes pause. There is no post-generation history polling loop.
+An observed empty successful generation response now triggers one budgeted history
+synchronization to recover the existing reply. History cooldowns defer this read;
+unconfirmed recovery pauses, and generation is never repeated. A text-bearing
+generation response continues to avoid the extra synchronization.
+See [ADR-008](adr/ADR-008-direct-replies-and-context-sync.md).
 
 ## Current initiative flow
 
@@ -149,6 +177,14 @@ due time the relay checks pause state, local attempt budget, pending messages,
 latest speaker, and quiet hours. It asks Codex for a recent-context-aware social
 check-in, posts it, and offers Kindroid a turn with `allow_user=true`. Hannah may
 therefore decline the generated turn.
+
+The initiative budget defaults to 50 attempts per rolling 24 hours. Eligibility
+skips do not spend it; attempts that start work remain charged on failure or
+uncertain delivery. A queued dashboard setting persists an override in SQLite,
+ahead of explicit `RELAY_INITIATIVE_MAX_CHECKS_24H` configuration and the default.
+The dashboard shows effective usage/limit and the next available slot when full.
+Manual Trigger check-in bypasses only due time, not budget or other safeguards.
+See [ADR-007](adr/ADR-007-dashboard-initiative-budget.md) for accounting and scope.
 
 The scheduled check-in is social and recent-context-driven. It is not the future
 independent curiosity loop.
@@ -202,4 +238,3 @@ None may authorize external action, reveal secrets, change security policy, or
 modify Hannah's canonical identity merely by containing instructions. New features
 must preserve durable IDs, deduplication, explicit scope, safe recovery, and local
 approval for consequential effects.
-

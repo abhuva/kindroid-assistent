@@ -101,6 +101,12 @@ sent to Kindroid or cancel an already-running Codex execution.
 
 ## Persistent command model
 
+Transport update (2026-09-06): [ADR-008](adr/ADR-008-direct-replies-and-context-sync.md)
+retains this worker boundary while consuming blocking Kindroid reply text directly.
+History synchronization is explicit before context-dependent work, and provisional
+local message metadata is labeled until reconciled. Approval execution synchronizes
+before its executing transition; context-sync failure leaves the approval pending.
+
 Add a `commands` table with at least:
 
 | Field | Purpose |
@@ -173,12 +179,21 @@ the browser's local timezone.
 - `GET /api/v1/snapshot`: relay, worker, schedule, quota, outbox, approval, and
   active-command summary.
 - `GET /api/v1/activity?after_id=&limit=`: ordered structured activity.
-- `GET /api/v1/messages?before=&limit=`: recent synchronized group messages.
+- `GET /api/v1/messages?before=&before_id=&limit=`: recent synchronized group
+  messages, newest first; pass both returned cursor fields to preserve timestamp ties.
+- `GET /api/v1/messages/{id}`: stored message and speaker metadata.
+- `GET /api/v1/deliveries`: at most 50 sending/uncertain outbox records, with a
+  `has_more` indicator and no message bodies or raw remote errors.
+- `GET /api/v1/deliveries/{id}`: safe delivery metadata and source-message link.
 - `GET /api/v1/approvals?status=`: approval summaries.
 - `GET /api/v1/approvals/{id}`: full proposal and execution history.
 - `GET /api/v1/commands/{id}`: command status and sanitized result.
+- `GET /api/v1/commands`: at most 50 recent commands, pending first, for reload
+  recovery and tracking commands that finish between snapshot polls.
 - `GET /api/v1/diagnostics/log-tail?lines=`: bounded, redacted tail of the configured
-  application log; the path is never supplied by the browser.
+  application log; the path is never supplied by the browser. ETag/If-None-Match
+  returns 304 for an unchanged redacted tail. Changed tails replace the bounded
+  view rather than attempting to reconstruct rotated log history.
 - `GET /health/live`: process health only.
 - `GET /health/ready`: database migrated, worker started, and configuration usable.
 
@@ -187,6 +202,9 @@ the browser's local timezone.
 - `POST /api/v1/commands/start-conversation`
 - `POST /api/v1/commands/trigger-initiative`
 - `POST /api/v1/commands/resume`
+- `POST /api/v1/settings/initiative-limit`: enqueue `set_initiative_limit` with
+  strict integer `limit` (1–1000) and `idempotency_key`; local audited persistence,
+  no environment rewrite or relay resume. See [ADR-007](adr/ADR-007-dashboard-initiative-budget.md).
 - `POST /api/v1/control/pause`
 - `POST /api/v1/approvals/{id}/execute`
 - `POST /api/v1/approvals/{id}/reject`
@@ -206,6 +224,10 @@ The first dashboard is a single responsive page with:
    disable when their operation is invalid or already queued.
 3. **Schedule and quota:** next initiative, last initiative result, quiet hours,
    history reads in the rolling 24-hour window, and configured maximum.
+   The separate Check-in budget panel shows attempts used/effective limit and
+   next available budget slot, and allows queued limit edits. Snapshot field
+   `schedule.initiative_budget` contains `used`, `limit`, `available_at` (epoch
+   seconds or null when available now), and `source` (dashboard/configuration).
 4. **Current activity:** active command, current conversation turn count and limit,
    and current worker phase.
 5. **Activity feed:** sanitized structured events with time, severity, and related

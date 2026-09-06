@@ -31,3 +31,4 @@ Thumbs.db
 
 # Local browser investigation artifacts
 .playwright-mcp/
+node_modules/

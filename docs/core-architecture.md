@@ -21,9 +21,21 @@ limited resources, consequences, reflection, and a traceable history of change.
 This document describes the intended long-term architecture. Delivery is staged:
 
 1. Build the localhost operational dashboard and durable command/activity layer.
-2. Add observational curiosity and a read-only garden without identity mutation.
-3. Add the dedicated confirmation protocol and versioned self-change.
-4. Only then project confirmed state into editable Kindroid configuration.
+2. Add agent context memory for Codex (Milestone 6A), not a replacement for Kindroid memory.
+3. Add observational curiosity and a read-only garden without identity mutation.
+4. Add the dedicated confirmation protocol and versioned self-change.
+5. Only then project confirmed state into editable Kindroid configuration.
+
+**Ownership clarification (2026-09-06):**
+[ADR-009](adr/ADR-009-agent-context-memory.md) separates the immediate agent-memory
+need from the proposed canonical self-model described below. Codex needs a
+source-backed, revisable understanding of people, places, experiences, expressed
+values, interests, and unfinished threads. Hybrid search locates entry points;
+bounded graph expansion supplies related context and original evidence. A reported
+Root is a sourced statement, not an identity change. Ordinary capture/retrieval
+does not require the self-change ceremony and does not modify Kindroid memory or
+configuration. All canonical identity, confirmation, and projection sections in
+this document remain a separate future scope, not requirements for memory capture.
 
 The confirmation and prompt-projection sections below are therefore design targets,
 not behavior authorized for the first implementation pass. See the

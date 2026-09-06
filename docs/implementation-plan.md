@@ -1,7 +1,7 @@
 # Complete Implementation Plan
 
-**Status:** Proposed execution plan  
-**Date:** 2026-09-05
+**Status:** Milestone 6 release acceptance pending; Milestone 6A agent context memory planned
+**Date:** 2026-09-06
 
 ## How to use this plan
 
@@ -15,15 +15,25 @@ The plan deliberately separates operational infrastructure from agency behavior:
 Baseline
    -> durable commands and activity
    -> local dashboard
+   -> agent context memory (Codex's understanding, not Hannah's identity)
    -> observational curiosity
    -> garden state
    -> deliberate confirmation
    -> prompt projection and broader capabilities
 ```
 
-The dashboard milestone is useful on its own and is the next delivery target.
+The dashboard UI milestone is implemented and locally verified. The next delivery
+target is completing Milestone 6's Windows/browser, disposable-group, and release
+audit gates; backup/integrity and fake-adapter host failure journeys are implemented.
+Milestone 6A then adds agent context memory before exploration. Live baseline checks
+remain explicitly deferred; no remote acceptance is inferred from mock tests.
 
 ## Global constraints
+
+Transport correction before further milestones (2026-09-06):
+[ADR-008](adr/ADR-008-direct-replies-and-context-sync.md) records direct reply
+capture, migration 3, remote-ID reconciliation, and explicit Codex context sync.
+This does not complete the remaining live or Windows release acceptance checks.
 
 - [ ] **G-001 Preserve current relay safety invariants.** (Depends on: none)
   - [ ] Keep message deduplication and source-message/outbox linking.
@@ -112,20 +122,20 @@ The dashboard milestone is useful on its own and is the next delivery target.
   - [x] Do not share a SQLite connection object between threads.
   - [x] Ensure every request-scoped connection is closed after use.
   - [x] Add bounded handling for `database is locked` errors.
-- [ ] **DB-004 Separate migrations from routine connection creation.** (Depends on: DB-003)
-  - [ ] Apply migrations once before worker and HTTP threads start.
+- [x] **DB-004 Separate migrations from routine connection creation.** (Depends on: DB-003)
+  - [x] Apply migrations once before worker and HTTP threads start.
   - [x] Prevent request-scoped connections from racing to mutate the schema.
   - [x] Preserve a safe one-shot CLI path when the server is not running.
-- [ ] **DB-005 Test concurrent storage access.** (Depends on: DB-003, DB-004)
-  - [ ] Hold the worker connection open while web connections read status.
-  - [ ] Insert commands while the worker reads and writes other tables.
-  - [ ] Verify short transactions do not block polling for an unacceptable duration.
+- [x] **DB-005 Test concurrent storage access.** (Depends on: DB-003, DB-004)
+  - [x] Hold the worker connection open while web connections read status.
+  - [x] Insert commands while the worker reads and writes other tables.
+  - [x] Verify short transactions do not block polling for an unacceptable duration.
   - [x] Verify connection objects are never used from the wrong thread.
 
 ### M1 exit criteria
 
-- [ ] Current data upgrades in place through a tested schema-version path.
-- [ ] Worker and web database ownership is explicit and concurrency-tested.
+- [x] Current data upgrades in place through a tested schema-version path.
+- [x] Worker and web database ownership is explicit and concurrency-tested.
 
 ---
 
@@ -174,25 +184,25 @@ The dashboard milestone is useful on its own and is the next delivery target.
     outbound delivery, initiative outcomes, commands, approvals, and errors.
   - [x] Define severity, safe summary, correlation ID, and allowed detail fields per event.
   - [x] Decide which verbose diagnostics remain raw-log-only.
-- [ ] **EVT-002 Add the `activity_events` schema and repository.** (Depends on: EVT-001, DB-001)
+- [x] **EVT-002 Add the `activity_events` schema and repository.** (Depends on: EVT-001, DB-001)
   - [x] Use a monotonic integer ID suitable for polling cursors.
   - [x] Store UTC occurrence time.
   - [x] Validate detail JSON against event-specific allow lists.
   - [x] Provide `after_id` pagination with an enforced maximum page size.
-  - [ ] Add retention configuration without deleting safety-critical audit records.
-- [ ] **EVT-003 Instrument existing relay operations.** (Depends on: EVT-002)
-  - [ ] Emit start, stop, pause, resume, and cycle events.
-  - [ ] Emit message-received and message-processed events without hidden context.
-  - [ ] Emit Codex-started, Codex-completed, and Codex-failed events.
-  - [ ] Emit outbound-created, sending, sent, uncertain, and identity-fallback events.
-  - [ ] Emit initiative due, skipped reason, offered, answered, and declined-turn events.
-  - [ ] Emit approval-created and approval-status events.
-  - [ ] Correlate events with message, outbox, approval, and command IDs.
-- [ ] **EVT-004 Add redaction and leakage tests.** (Depends on: EVT-003)
-  - [ ] Seed recognizable fake API keys, authorization values, cookies, and prompt secrets.
-  - [ ] Verify none appear in event summaries or details.
-  - [ ] Verify exception messages are sanitized before database storage.
-  - [ ] Verify raw HTTP response bodies are not automatically stored.
+  - [x] Add retention configuration without deleting safety-critical audit records.
+- [x] **EVT-003 Instrument existing relay operations.** (Depends on: EVT-002)
+  - [x] Emit start, stop, pause, resume, and cycle events.
+  - [x] Emit message-received and message-processed events without hidden context.
+  - [x] Emit Codex-started, Codex-completed, and Codex-failed events.
+  - [x] Emit outbound-created, sending, sent, uncertain, and identity-fallback events.
+  - [x] Emit initiative due, skipped reason, offered, answered, and declined-turn events.
+  - [x] Emit approval-created and approval-status events.
+  - [x] Correlate events with message, outbox, approval, and command IDs.
+- [x] **EVT-004 Add redaction and leakage tests.** (Depends on: EVT-003)
+  - [x] Seed recognizable fake API keys, authorization values, cookies, and prompt secrets.
+  - [x] Verify none appear in event summaries or details.
+  - [x] Verify exception messages are sanitized before database storage.
+  - [x] Verify raw HTTP response bodies are not automatically stored.
 
 ### M2.3 Worker status
 
@@ -201,19 +211,19 @@ The dashboard milestone is useful on its own and is the next delivery target.
     `sending`, `executing_approval`, `paused`, `degraded`, and `stopping`.
   - [x] Record phase start time, last heartbeat, active command, and sanitized note.
   - [x] Define the stale threshold separately from heartbeat cadence.
-- [ ] **WORK-002 Instrument worker phase transitions.** (Depends on: WORK-001, EVT-003)
-  - [ ] Ensure failure paths return to a valid degraded or paused state.
-  - [ ] Avoid claiming that the worker is idle while an external call is in flight.
-  - [ ] Document that synchronous calls can delay heartbeat updates.
-- [ ] **WORK-003 Test worker-state reporting.** (Depends on: WORK-002)
-  - [ ] Test successful phase sequences.
-  - [ ] Test exceptions at each external boundary.
-  - [ ] Test stale detection without relying on wall-clock sleeps.
+- [x] **WORK-002 Instrument worker phase transitions.** (Depends on: WORK-001, EVT-003)
+  - [x] Ensure failure paths return to a valid degraded or paused state.
+  - [x] Avoid claiming that the worker is idle while an external call is in flight.
+  - [x] Document that synchronous calls can delay heartbeat updates.
+- [x] **WORK-003 Test worker-state reporting.** (Depends on: WORK-002)
+  - [x] Test successful phase sequences.
+  - [x] Test exceptions at each external boundary.
+  - [x] Test stale detection without relying on wall-clock sleeps.
 
 ### M2 exit criteria
 
-- [ ] Commands are durable, idempotent, serially claimable, and recoverable.
-- [ ] Important operations have safe structured activity and explicit worker state.
+- [x] Commands are durable, idempotent, serially claimable, and recoverable.
+- [x] Important operations have safe structured activity and explicit worker state.
 
 ---
 
@@ -255,11 +265,11 @@ The dashboard milestone is useful on its own and is the next delivery target.
   - [x] Wake the worker.
   - [x] Report whether work is in flight so the UI can show pause pending.
   - [x] Do not claim cancellation of already-sent Kindroid or Codex requests.
-- [ ] **RUN-004 Add worker integration tests.** (Depends on: RUN-002, RUN-003)
-  - [ ] Use fake Kindroid and Codex adapters through the complete application service.
+- [x] **RUN-004 Add worker integration tests.** (Depends on: RUN-002, RUN-003)
+  - [x] Use fake Kindroid and Codex adapters through the complete application service.
   - [x] Prove commands execute serially.
-  - [ ] Prove duplicate conversation commands do not produce duplicate messages.
-  - [ ] Prove normal polling and manual commands cannot overlap external effects.
+  - [x] Prove duplicate conversation commands do not produce duplicate messages.
+  - [x] Prove normal polling and manual commands cannot overlap external effects.
   - [x] Prove shutdown waits for or safely abandons the current boundary.
   - [x] Prove command failure does not terminate the dashboard host unexpectedly.
 
@@ -271,32 +281,32 @@ The dashboard milestone is useful on its own and is the next delivery target.
   - [x] Validate that the host is loopback-only.
   - [x] Validate port range and positive intervals.
   - [x] Add safe examples to `kindroid.env.example`.
-- [ ] **HOST-002 Implement the combined host lifecycle.** (Depends on: RUN-004, HOST-001, DB-004)
-  - [ ] Check port availability before starting automatic relay activity.
-  - [ ] Acquire the process lock once for the entire host lifetime.
-  - [ ] Apply migrations and interrupted-command recovery.
-  - [ ] Start the worker thread and verify it reaches a ready state.
-  - [ ] Start the HTTP server in the main process lifecycle.
-  - [ ] Coordinate Ctrl+C and programmatic shutdown.
-  - [ ] Close HTTP, Kindroid, Codex, SQLite, log, and thread resources deterministically.
-  - [ ] Release the process lock last.
-- [ ] **HOST-003 Add `kindroid-relay serve`.** (Depends on: HOST-002)
-  - [ ] Print the loopback dashboard address without embedding secrets.
-  - [ ] Optionally open the default browser only after readiness.
-  - [ ] Keep `run` as the headless mode.
-  - [ ] Improve mutating CLI lock errors to point to the running dashboard.
-- [ ] **HOST-004 Test lifecycle failures.** (Depends on: HOST-002)
-  - [ ] Port conflict fails before worker activity.
-  - [ ] Migration failure prevents startup.
-  - [ ] Worker startup failure keeps secrets out of terminal output.
-  - [ ] HTTP server failure requests worker shutdown.
-  - [ ] Ctrl+C on Windows terminates without an orphan thread or stale lock.
-  - [ ] A stale process lock remains recoverable under current rules.
+- [x] **HOST-002 Implement the combined host lifecycle.** (Depends on: RUN-004, HOST-001, DB-004)
+  - [x] Check port availability before starting automatic relay activity.
+  - [x] Acquire the process lock once for the entire host lifetime.
+  - [x] Apply migrations and interrupted-command recovery.
+  - [x] Start the worker thread and verify it reaches a ready state.
+  - [x] Start the HTTP server in the main process lifecycle.
+  - [x] Coordinate Ctrl+C and programmatic shutdown.
+  - [x] Close HTTP, Kindroid, Codex, SQLite, log, and thread resources deterministically.
+  - [x] Release the process lock last.
+- [x] **HOST-003 Add `kindroid-relay serve`.** (Depends on: HOST-002)
+  - [x] Print the loopback dashboard address without embedding secrets.
+  - [x] Optionally open the default browser only after readiness.
+  - [x] Keep `run` as the headless mode.
+  - [x] Improve mutating CLI lock errors to point to the running dashboard.
+- [x] **HOST-004 Test lifecycle failures.** (Depends on: HOST-002)
+  - [x] Port conflict fails before worker activity.
+  - [x] Migration failure prevents startup.
+  - [x] Worker startup failure keeps secrets out of terminal output.
+  - [x] HTTP server failure requests worker shutdown.
+  - [x] Ctrl+C on Windows terminates without an orphan thread or stale lock.
+  - [x] A stale process lock remains recoverable under current rules.
 
 ### M3 exit criteria
 
-- [ ] `serve` runs one safely serialized relay worker and a responsive local host.
-- [ ] Browser requests cannot directly invoke Kindroid or Codex objects.
+- [x] `serve` runs one safely serialized relay worker and a responsive local host.
+- [x] Browser requests cannot directly invoke Kindroid or Codex objects.
 
 ---
 
@@ -346,12 +356,12 @@ The dashboard milestone is useful on its own and is the next delivery target.
 - [x] **WEB-015 Implement command status reads.** (Depends on: WEB-003, CMD-003)
   - [x] Return status, sanitized result/error, and lifecycle timestamps.
   - [x] Return 404 for unknown IDs.
-- [ ] **WEB-016 Implement bounded diagnostic log reads.** (Depends on: WEB-003, HOST-001)
+- [x] **WEB-016 Implement bounded diagnostic log reads.** (Depends on: WEB-003, HOST-001)
   - [x] Read only the configured application log path.
   - [x] Accept a bounded line count, never a caller-supplied filesystem path.
   - [x] Apply secret-pattern and structured-value redaction before returning text.
   - [x] Return a truncation indicator for bounded refreshes.
-  - [ ] Test missing, rotated, oversized, and non-UTF-8-damaged log files safely.
+  - [x] Test missing, rotated, oversized, and non-UTF-8-damaged log files safely.
 
 ### M4.3 Mutation endpoints
 
@@ -396,19 +406,19 @@ The dashboard milestone is useful on its own and is the next delivery target.
   - [x] Add `X-Content-Type-Options: nosniff`.
   - [x] Add `Referrer-Policy: no-referrer`.
   - [x] Add same-origin resource and frame policies.
-- [ ] **SEC-004 Add security regression tests.** (Depends on: SEC-001, SEC-002, SEC-003)
+- [x] **SEC-004 Add security regression tests.** (Depends on: SEC-001, SEC-002, SEC-003)
   - [x] Reject cross-origin state-changing requests.
   - [x] Reject missing or incorrect CSRF nonce.
   - [x] Reject form-encoded mutations.
   - [x] Reject oversized bodies.
-  - [ ] Verify read endpoints do not support JSONP or permissive CORS.
-  - [ ] Scan rendered HTML and API fixtures for seeded fake credentials.
+  - [x] Verify read endpoints do not support JSONP or permissive CORS.
+  - [x] Scan rendered HTML and API fixtures for seeded fake credentials.
 
 ### M4 exit criteria
 
-- [ ] All specified endpoints have typed contracts and tests.
-- [ ] State-changing browser requests require same-origin proof.
-- [ ] No HTTP request thread performs an external side effect directly.
+- [x] All specified endpoints have typed contracts and tests.
+- [x] State-changing browser requests require same-origin proof.
+- [x] No HTTP request thread performs an external side effect directly.
 
 ---
 
@@ -416,98 +426,141 @@ The dashboard milestone is useful on its own and is the next delivery target.
 
 ### M5.1 Static UI foundation
 
-- [ ] **UI-001 Create local static assets.** (Depends on: WEB-002, SEC-003)
-  - [ ] Add one semantic HTML entry page.
-  - [ ] Add repository-local CSS and vanilla JavaScript.
-  - [ ] Avoid CDN fonts, scripts, analytics, and network calls outside the local API.
-  - [ ] Inject only the per-run CSRF nonce and non-sensitive display configuration.
-- [ ] **UI-002 Build a reusable API client.** (Depends on: UI-001, WEB-011, SEC-002)
-  - [ ] Add the CSRF header only to mutation requests.
-  - [ ] Generate a UUID idempotency key per user action and retain it across retries.
-  - [ ] Parse consistent API errors.
-  - [ ] Cancel obsolete read requests when refreshing.
-  - [ ] Back off after connectivity errors.
-  - [ ] Never interpret HTTP 202 as operation completion.
-- [ ] **UI-003 Implement polling and stale-state behavior.** (Depends on: UI-002, WEB-012)
-  - [ ] Poll snapshot and activity every configured interval while visible.
-  - [ ] Refresh immediately after a mutation response.
-  - [ ] Pause or slow polling when the page is hidden.
-  - [ ] Resume using the last activity cursor.
-  - [ ] Show disconnected and stale-worker states clearly.
+- [x] **UI-001 Create local static assets.** (Depends on: WEB-002, SEC-003)
+  - [x] Add one semantic HTML entry page.
+  - [x] Add repository-local CSS and vanilla JavaScript.
+  - [x] Avoid CDN fonts, scripts, analytics, and network calls outside the local API.
+  - [x] Inject only the per-run CSRF nonce and non-sensitive display configuration.
+- [x] **UI-002 Build a reusable API client.** (Depends on: UI-001, WEB-011, SEC-002)
+  - [x] Add the CSRF header only to mutation requests.
+  - [x] Generate a UUID idempotency key per user action and retain it across retries.
+  - [x] Parse consistent API errors.
+  - [x] Cancel obsolete read requests when refreshing.
+  - [x] Back off after connectivity errors.
+  - [x] Never interpret HTTP 202 as operation completion.
+- [x] **UI-003 Implement polling and stale-state behavior.** (Depends on: UI-002, WEB-012)
+  - [x] Poll snapshot and activity every configured interval while visible.
+  - [x] Refresh immediately after a mutation response.
+  - [x] Pause or slow polling when the page is hidden.
+  - [x] Resume using the last activity cursor.
+  - [x] Show disconnected and stale-worker states clearly.
 
 ### M5.2 Dashboard panels
 
-- [ ] **UI-010 Implement status header.** (Depends on: UI-003)
-  - [ ] Show running, paused, busy, degraded, stale, and stopped distinctions.
-  - [ ] Show worker phase and last heartbeat.
-  - [ ] Show pause or degradation reason without exposing tracebacks.
-- [ ] **UI-011 Implement operational controls.** (Depends on: UI-002, WEB-020, WEB-021)
-  - [ ] Add Start conversation, Trigger check-in, Pause, and Resume.
-  - [ ] Disable invalid or duplicate controls based on current state.
-  - [ ] Confirm pause reason when useful.
-  - [ ] Show queued/running/completed command state beside the initiating control.
-- [ ] **UI-012 Implement schedule and quota panel.** (Depends on: UI-003)
-  - [ ] Display times in the browser's local timezone with absolute date on hover/details.
-  - [ ] Show next initiative, last outcome, fixed schedule or interval basis, and quiet hours.
-  - [ ] Show history reads used and configured maximum.
-  - [ ] Warn near the quota without implying Kindroid's server count is known exactly.
-- [ ] **UI-013 Implement current activity panel.** (Depends on: UI-003)
-  - [ ] Show active command and elapsed time.
-  - [ ] Show conversation turn count and maximum.
-  - [ ] Show waiting states distinctly from errors.
-- [ ] **UI-014 Implement structured activity feed.** (Depends on: UI-003)
-  - [ ] Append cursor-based events without duplication.
-  - [ ] Filter by severity and kind.
-  - [ ] Link correlated message, command, approval, and outbox identifiers.
-  - [ ] Bound in-browser retained items to prevent unbounded memory growth.
-- [ ] **UI-015 Implement message view.** (Depends on: WEB-013, UI-002)
-  - [ ] Visually distinguish Hannah, Codex, Marc, and unknown participants.
-  - [ ] Show stored display name and speaker metadata.
-  - [ ] Indicate prefix fallback without rewriting historical attribution.
-  - [ ] Paginate older messages deliberately rather than loading all history.
-- [ ] **UI-016 Implement delivery-health view.** (Depends on: WEB-011, UI-003)
-  - [ ] Make uncertain outbox status prominent.
-  - [ ] Explain that automatic retry is disabled to prevent duplicate delivery.
-  - [ ] Link to relevant activity and source message.
-  - [ ] Do not add a force-retry button in v1.
-- [ ] **UI-017 Implement approval views.** (Depends on: WEB-014, WEB-022)
-  - [ ] List pending proposals with risk and summary.
-  - [ ] Show full stored instruction before any decision.
-  - [ ] Support rejection with a confirmation step.
-  - [ ] Show sandbox and post-result choice in a second execution-confirmation modal.
-  - [ ] Track the resulting durable command to completion.
-- [ ] **UI-018 Implement diagnostics log view.** (Depends on: WEB-016, UI-002)
-  - [ ] Keep the raw-log panel collapsed by default.
-  - [ ] Show that contents are diagnostic and may be incomplete after rotation.
-  - [ ] Refresh incrementally without loading the full file.
-  - [ ] Preserve whitespace while preventing HTML interpretation.
+- [x] **UI-010 Implement status header.** (Depends on: UI-003)
+  - [x] Show running, paused, busy, degraded, stale, and stopped distinctions.
+  - [x] Show worker phase and last heartbeat.
+  - [x] Show pause or degradation reason without exposing tracebacks.
+- [x] **UI-011 Implement operational controls.** (Depends on: UI-002, WEB-020, WEB-021)
+  - [x] Add Start conversation, Trigger check-in, Pause, and Resume.
+  - [x] Disable invalid or duplicate controls based on current state.
+  - [x] Confirm pause reason when useful.
+  - [x] Show queued/running/completed command state beside the initiating control.
+- [x] **UI-012 Implement schedule and quota panel.** (Depends on: UI-003)
+  - [x] Display times in the browser's local timezone with absolute date on hover/details.
+  - [x] Show next initiative, last outcome, fixed schedule or interval basis, and quiet hours.
+  - [x] Show history reads used and configured maximum.
+  - [x] Warn near the quota without implying Kindroid's server count is known exactly.
+- [x] **UI-013 Implement current activity panel.** (Depends on: UI-003)
+  - [x] Show active command and elapsed time.
+  - [x] Show conversation turn count and maximum.
+  - [x] Show waiting states distinctly from errors.
+- [x] **UI-014 Implement structured activity feed.** (Depends on: UI-003)
+  - [x] Append cursor-based events without duplication.
+  - [x] Filter by severity and kind.
+  - [x] Link correlated message, command, approval, and outbox identifiers.
+  - [x] Bound in-browser retained items to prevent unbounded memory growth.
+- [x] **UI-015 Implement message view.** (Depends on: WEB-013, UI-002)
+  - [x] Visually distinguish Hannah, Codex, Marc, and unknown participants.
+  - [x] Show stored display name and speaker metadata.
+  - [x] Indicate prefix fallback without rewriting historical attribution.
+  - [x] Paginate older messages deliberately rather than loading all history.
+- [x] **UI-016 Implement delivery-health view.** (Depends on: WEB-011, UI-003)
+  - [x] Make uncertain outbox status prominent.
+  - [x] Explain that automatic retry is disabled to prevent duplicate delivery.
+  - [x] Link to relevant activity and source message.
+  - [x] Do not add a force-retry button in v1.
+- [x] **UI-017 Implement approval views.** (Depends on: WEB-014, WEB-022)
+  - [x] List pending proposals with risk and summary.
+  - [x] Show full stored instruction before any decision.
+  - [x] Support rejection with a confirmation step.
+  - [x] Show sandbox and post-result choice in a second execution-confirmation modal.
+  - [x] Track the resulting durable command to completion.
+- [x] **UI-018 Implement diagnostics log view.** (Depends on: WEB-016, UI-002)
+  - [x] Keep the raw-log panel collapsed by default.
+  - [x] Show that contents are diagnostic and may be incomplete after rotation.
+  - [x] Refresh incrementally without loading the full file.
+  - [x] Preserve whitespace while preventing HTML interpretation.
 
 ### M5.3 Accessibility and responsiveness
 
-- [ ] **UI-020 Complete keyboard and screen-reader behavior.** (Depends on: UI-010 through UI-018)
-  - [ ] Use native buttons, headings, tables/lists, labels, and dialogs where possible.
-  - [ ] Provide visible keyboard focus.
-  - [ ] Trap and restore focus correctly for confirmation dialogs.
-  - [ ] Announce command completion and critical errors through an appropriate live region.
-  - [ ] Avoid status communication by color alone.
-- [ ] **UI-021 Complete responsive layout.** (Depends on: UI-010 through UI-018)
-  - [ ] Support common desktop widths.
-  - [ ] Support a narrow tablet/phone-width diagnostic view.
-  - [ ] Keep long message and error text from breaking layout.
-  - [ ] Keep primary safety controls visible and distinct.
-- [ ] **UI-022 Add UI behavior tests.** (Depends on: UI-020, UI-021)
-  - [ ] Test rendering for every worker/status state.
-  - [ ] Test command submission and idempotent retry.
-  - [ ] Test polling cursor and reconnect behavior.
-  - [ ] Test control disabling during conflicts.
-  - [ ] Test approval confirmation paths.
-  - [ ] Run an automated accessibility scan if a lightweight local tool is selected.
+- [x] **UI-020 Complete keyboard and screen-reader behavior.** (Depends on: UI-010 through UI-018)
+  - [x] Use native buttons, headings, tables/lists, labels, and dialogs where possible.
+  - [x] Provide visible keyboard focus.
+  - [x] Trap and restore focus correctly for confirmation dialogs.
+  - [x] Announce command completion and critical errors through an appropriate live region.
+  - [x] Avoid status communication by color alone.
+- [x] **UI-021 Complete responsive layout.** (Depends on: UI-010 through UI-018)
+  - [x] Support common desktop widths.
+  - [x] Support a narrow tablet/phone-width diagnostic view.
+  - [x] Keep long message and error text from breaking layout.
+  - [x] Keep primary safety controls visible and distinct.
+- [x] **UI-022 Add UI behavior tests.** (Depends on: UI-020, UI-021)
+  - [x] Test rendering for every worker/status state.
+  - [x] Test command submission and idempotent retry.
+  - [x] Test polling cursor and reconnect behavior.
+  - [x] Test control disabling during conflicts.
+  - [x] Test approval confirmation paths.
+  - [x] Run an automated accessibility scan if a lightweight local tool is selected.
 
 ### M5 exit criteria
 
-- [ ] Marc can understand relay health and invoke every agreed v1 operation from a browser.
-- [ ] The UI remains usable when the worker is busy, stale, paused, or failed.
-- [ ] Approval actions display the exact scope before execution.
+- [x] Marc can understand relay health and invoke every agreed v1 operation from a browser.
+- [x] The UI remains usable when the worker is busy, stale, paused, or failed.
+- [x] Approval actions display the exact scope before execution.
+
+
+Verification (2026-09-06): 88 pytest checks passed in 10.35 seconds under a
+60-second isolated-process limit. These include nine actual-dashboard DOM tests,
+API-client tests, and axe scans of the page and execution confirmation. The DOM
+harness uses mocked responses; it cannot verify CSS layout/color contrast or
+native browser dialog behavior. Real-browser Windows and disposable-group
+acceptance remain explicitly open under M6, not silently claimed complete here.
+Conditional log refresh uses ETags and bounded replacement tails, not a full-file
+reload or reconstruction across rotation.
+
+Follow-up browser fix (2026-09-06): bind the default fetch implementation to
+Window. The DOM mock now enforces the native receiver requirement instead of
+masking it with an arrow function. A regression test reproduced the reported
+Illegal invocation before the fix; all ten dashboard DOM tests and the API-client
+checks pass afterward (`npm test`). Real-browser acceptance remains open in M6.
+
+Check-in regression follow-up: manual intent now survives history rescheduling
+without bypassing pause, quotas, quiet hours, pending-message handling, or initial
+bootstrap. Latest-speaker eligibility recognizes known Codex outbox messages even
+with stored persona fallback. Durable trigger results include `initiative_outcome`
+and `check_in_sent` separately from handled-chain counts; command activity and UI
+show the actual outcome rather than treating completion as proof of a sent message.
+Verification: 118 tests passed in 15.49 seconds under the 60-second isolated-process
+limit, including 17 new initiative checks and the dashboard outcome test. The
+existing test-client deprecation warning remains. No live messages or restart were
+performed; the running relay must be restarted to load the backend fix.
+
+Check-in budget correction (2026-09-06, user-requested scope in ADR-007):
+
+- [x] Default to 50 attempts per rolling 24 hours without bypassing the budget.
+- [x] Exclude eligibility skips, including historical skip rows; retain failed,
+  uncertain, and unrecognized work attempts conservatively.
+- [x] Expose an audited, idempotent queued dashboard limit (1–1000), persisted in
+  SQLite ahead of environment/default configuration, without unpausing the relay.
+- [x] Display used/allowed attempts and when enough usage expires for another slot.
+- [x] Cover expiry after lowering the limit, persistence, live worker adoption,
+  validation, CSRF, audit rollback, paused saves, draft preservation and lost-response retries.
+
+Verification: 130 pytest tests passed in 14.74 seconds under the isolated
+60-second limit (one existing test-client deprecation warning). `npm test` also
+passed independently: API-client checks and 13 dashboard DOM/accessibility tests.
+No live configuration changes, messages, or relay restart were performed.
 
 ---
 
@@ -520,33 +573,76 @@ The dashboard milestone is useful on its own and is the next delivery target.
   - [x] Preserve UTF-8.
   - [x] Keep `httpx` request logging restricted.
   - [x] Test rotation using small thresholds.
-- [ ] **OPS-002 Add a bounded diagnostic bundle command.** (Depends on: EVT-003)
-  - [ ] Export schema version, sanitized status, recent structured events, and log tail.
-  - [ ] Exclude API keys, auth state, environment contents, and unnecessary message bodies.
-  - [ ] Require an explicit destination path.
-  - [ ] Document that the bundle must be reviewed before sharing.
-- [ ] **OPS-003 Add database backup and integrity commands.** (Depends on: DB-004)
-  - [ ] Use SQLite's online backup API rather than copying active database files blindly.
-  - [ ] Add an integrity check.
-  - [ ] Include schema version and creation time in backup metadata.
-  - [ ] Document restore into a separate path before replacing an active database.
+- [x] **OPS-002 Add a bounded diagnostic bundle command.** (Depends on: EVT-003)
+  - [x] Export schema version, sanitized status, recent structured events, and log tail.
+  - [x] Exclude API keys, auth state, environment contents, and unnecessary message bodies.
+  - [x] Require an explicit destination path.
+  - [x] Document that the bundle must be reviewed before sharing.
+  - Implementation: `diagnostics --output <new-file.json>`, read-only SQLite snapshot,
+    100 events and 200 log-tail lines, 512 KiB output cap. Free-form event/log text
+    is excluded, log headers retained, and related identifiers pseudonymized per
+    export. Tests cover privacy, bounded reads/output, corruption, deadlines,
+    no migration/overwrite, and CLI isolation from relay writes/external clients.
+  - Verification (2026-09-06): all 101 tests passed in 13.92 seconds under a
+    60-second isolated-process limit; `git diff --check` clean. The existing
+    Starlette test-client deprecation warning remains. No live export was made.
+- [x] **OPS-003 Add database backup and integrity commands.** (Depends on: DB-004)
+  - [x] Use SQLite's online backup API rather than copying active database files blindly.
+  - [x] Add an integrity check.
+  - [x] Include schema version and creation time in backup metadata.
+  - [x] Document restore into a separate path before replacing an active database.
+  - Implementation: `backup --output <new-directory>` writes a standalone database
+    plus a completion manifest (schema, UTC time, SHA-256, integrity/foreign keys).
+    `integrity [--database <path>]` is read-only and non-migrating; an explicit path
+    bypasses configuration loading. Tests use fixtures, including active WAL,
+    interrupted commands, uncertain outbox, legacy/future schema preservation,
+    corruption, deadlines, lock contention, and no overwrite/external clients.
+    Restore safety and private-backup handling are in `docs/operations.md`.
 
 ### M6.2 End-to-end verification
 
-- [ ] **TEST-001 Build a complete fake-adapter end-to-end test.** (Depends on: UI-022, RUN-004)
-  - [ ] Start the combined host on an ephemeral loopback port.
-  - [ ] Open the dashboard API and submit a conversation command.
-  - [ ] Simulate Hannah and Codex turns.
-  - [ ] Verify UI-visible activity, messages, command completion, and no duplicates.
-- [ ] **TEST-002 Test failure journeys.** (Depends on: TEST-001)
-  - [ ] Kindroid history 429.
-  - [ ] Kindroid outbound timeout and uncertain delivery.
-  - [ ] Codex failure before a response.
-  - [ ] Persona restoration failure.
-  - [ ] Database busy timeout.
-  - [ ] Worker thread exception.
-  - [ ] Browser refresh during a running command.
-  - [ ] Process restart after an interrupted command.
+User-requested sign-in autostart addition (2026-09-06):
+
+- [x] **OPS-004 Add reversible current-user sign-in autostart.**
+  - [x] Provide install/status/remove commands and safe `-WhatIf` previews.
+  - [x] Run the combined host console-free in its repository under limited user privileges.
+  - [x] Prevent duplicate scheduled starts, remove the runtime limit, and bound crash restarts.
+  - [x] Preserve existing safety pauses and leave running processes untouched on install/remove.
+  - [x] Test launcher behavior and task definitions with mocked registration/removal.
+  - [x] Register the local sign-in task without starting the live relay.
+- [x] Verify actual autostart after Marc's next Windows sign-in (manual acceptance).
+  Marc explicitly confirmed that autostart works during the 2026-09-06 conversation.
+
+Autostart verification: all four focused checks passed. The full regression run
+had 91 passes and one dashboard DOM startup timeout at its unchanged 15-second
+limit; the subsequent standalone `npm test` passed all ten DOM checks and the
+API-client checks. No live relay was started or stopped during verification.
+
+- [x] **TEST-001 Build a complete fake-adapter end-to-end test.** (Depends on: UI-022, RUN-004)
+  - [x] Start the combined host on an ephemeral loopback port.
+  - [x] Open the dashboard API and submit a conversation command.
+  - [x] Simulate Hannah and Codex turns.
+  - [x] Verify UI-visible activity, messages, command completion, and no duplicates.
+- [x] **TEST-002 Test failure journeys.** (Depends on: TEST-001)
+  - [x] Kindroid history 429.
+  - [x] Kindroid outbound timeout and uncertain delivery.
+  - [x] Codex failure before a response.
+  - [x] Persona restoration failure.
+  - [x] Database busy timeout.
+  - [x] Worker thread exception.
+  - [x] Browser refresh during a running command.
+  - [x] Process restart after an interrupted command.
+  - `tests/test_end_to_end.py` runs real Uvicorn/HTTP, the combined host, worker,
+    and SQLite with fake external adapters. Reload is an HTTP page/API reload,
+    supplemented by existing DOM recovery tests, not visual browser acceptance.
+    Worker crash is followed by host restart against the same fixture database;
+    interrupted effects remain paused and are not replayed. No signals or live
+    Kindroid requests are used.
+  - Contention testing exposed the generic HTTP error/connection-close path:
+    SQLite errors now receive explicit sanitized responses, with 503 for busy
+    storage and no raw error text in logs. The DOM accessibility fixture loads
+    repository CSS directly and disables axe network preloading, eliminating its
+    dependency on the fixture URL without increasing the 15-second test limit.
 - [ ] **TEST-003 Run manual Windows acceptance.** (Depends on: TEST-001, TEST-002)
   - [ ] Start `serve` from the intended terminal environment.
   - [ ] Open the displayed URL manually and with optional auto-open.
@@ -556,35 +652,44 @@ The dashboard milestone is useful on its own and is the next delivery target.
   - [ ] Confirm Ctrl+C shuts down cleanly.
   - [ ] Confirm headless `run` still works.
 - [ ] **TEST-004 Run regression and quality checks.** (Depends on: TEST-003)
-  - [ ] Run all unit, API, integration, and end-to-end tests.
-  - [ ] Run `git diff --check`.
+  - [x] Run all unit, API, integration, and end-to-end tests.
+  - [x] Run `git diff --check`.
   - [ ] Review dependency changes and licenses.
   - [ ] Review all logging/event call sites for sensitive data.
   - [ ] Review all mutation endpoints for CSRF and serialized execution.
+  - Local regression checkpoint (2026-09-06): all 205 pytest tests passed in
+    40.83 seconds under the isolated 60-second limit. `npm ci --ignore-scripts`
+    completed; standalone `npm test` passed all 14 DOM/accessibility checks plus
+    API-client checks. The existing Starlette test-client and npm whatwg-encoding
+    deprecation warnings remain. `git diff --check` passed. No live state backup,
+    restart, or external conversation was performed. Repeat release verification
+    after TEST-003; this parent task and the full release audit remain open.
 
 ### M6.3 Documentation and handoff
 
 - [ ] **DOC-001 Update installation and operation documentation.** (Depends on: TEST-003)
-  - [ ] Document new dependencies and upgrade steps.
-  - [ ] Document `serve`, the dashboard URL, and headless recovery.
-  - [ ] Document every dashboard control and what it cannot cancel.
-  - [ ] Document backup, diagnostic bundle, and restart recovery.
-  - [ ] Document local security assumptions.
-- [ ] **DOC-002 Add troubleshooting guidance.** (Depends on: TEST-002)
-  - [ ] Port already in use.
-  - [ ] Stale process lock.
-  - [ ] Worker stale/degraded.
-  - [ ] Database migration or integrity failure.
-  - [ ] Interrupted command.
-  - [ ] Uncertain outbound delivery.
-  - [ ] Kindroid quota/rate-limit behavior.
-  - [ ] Persona attribution fallback.
+  - [x] Document new dependencies and upgrade steps.
+  - [x] Document `serve`, the dashboard URL, and headless recovery.
+  - [x] Document every dashboard control and what it cannot cancel.
+  - [x] Document backup, diagnostic bundle, and restart recovery.
+  - [x] Document local security assumptions.
+  - Documentation is implemented in README and `docs/operations.md`; the parent
+    remains open pending validation against TEST-003's manual acceptance.
+- [x] **DOC-002 Add troubleshooting guidance.** (Depends on: TEST-002)
+  - [x] Port already in use.
+  - [x] Stale process lock.
+  - [x] Worker stale/degraded.
+  - [x] Database migration or integrity failure.
+  - [x] Interrupted command.
+  - [x] Uncertain outbound delivery.
+  - [x] Kindroid quota/rate-limit behavior.
+  - [x] Persona attribution fallback.
 - [ ] **REL-001 Tag the dashboard milestone.** (Depends on: TEST-004, DOC-001, DOC-002)
-  - [ ] Record schema version and rollback steps.
+  - [x] Record schema version and rollback steps.
   - [ ] Back up the live database.
   - [ ] Run one final disposable-group conversation.
   - [ ] Confirm no real secrets are tracked by Git.
-  - [ ] Record known limitations and deferred work.
+  - [x] Record known limitations and deferred work.
 
 ### Dashboard milestone definition of done
 
@@ -597,14 +702,114 @@ The dashboard milestone is useful on its own and is the next delivery target.
 
 ---
 
+## Milestone 6A: Agent context memory
+
+**Status:** Planned, not implemented. **Depends on:** REL-001.
+**Decision:** [ADR-009](adr/ADR-009-agent-context-memory.md).
+
+This memory serves Hannah's personal agent/Codex: understanding the situation,
+retrieving relevant older context, and providing flexible, informed assistance.
+It is not a replacement for Kindroid memory, a canonical identity store, or a
+mechanism for writing Roots into Hannah's configuration. The 6A label preserves
+the existing numbering while making this an explicit prerequisite of Milestone 7.
+
+### M6A.1 Source-backed memory and capture
+
+- [ ] **MEM-001 Define the agent-memory contract.** (Depends on: REL-001)
+  - [ ] Define entities, aliases, attributed statements, typed connections, and source evidence.
+  - [ ] Distinguish Hannah/Marc statements, Codex interpretations, external sources, and system observations.
+  - [ ] Cover people, places, experiences, expressed values, interests, unfinished questions, prior offers/outcomes, and commitments.
+  - [ ] Define temporal scope and active/superseded/disputed/retracted records; active means eligible for retrieval, not objectively true.
+  - [ ] Record a reported Root as a sourced self-description, not canonical identity or consent.
+  - [ ] Separate capture, correction, retrieval, local authority, and future self-change.
+- [ ] **MEM-002 Add versioned graph-shaped storage.** (Depends on: MEM-001, DB-004)
+  - [ ] Use numbered SQLite migrations preserving existing messages, commands, approvals, and generation links.
+  - [ ] Add stable entity/statement/relationship IDs, source-message references, exact quotations, authorship, and extraction/version metadata.
+  - [ ] Keep interpretations separate from quotations and support multiple evidence sources per statement.
+  - [ ] Preserve contradictory statements and correction history; do not silently merge entities by similarity or overwrite evidence.
+  - [ ] Enforce referential integrity, idempotent inserts, conversation/source scope, and one connection per thread.
+  - [ ] Treat search indexes/embeddings as rebuildable derivatives of source-backed records.
+- [ ] **MEM-003 Capture important statements from existing chat.** (Depends on: MEM-002, CMD-001)
+  - [ ] Add a local Save observation action linked to a selected stored message and exact passage.
+  - [ ] Label Marc's selection separately from the original speaker's statement or Codex's interpretation.
+  - [ ] Persist through a validated, CSRF-protected durable command executed by the worker.
+  - [ ] Allow bounded, resumable backfill from already captured local history without new Kindroid reads, replies, or message replay.
+  - [ ] Keep unresolved/provisional speaker attribution explicit; it cannot establish a Hannah-originated claim.
+- [ ] **MEM-004 Add bounded automatic observation extraction.** (Depends on: MEM-003)
+  - [ ] Extract candidate entities/statements/connections from selected captured messages in worker-owned, budgeted batches.
+  - [ ] Validate source IDs and quotation spans against stored text; reject invented evidence and separate inferred edges.
+  - [ ] Preserve ambiguous entity matches for review rather than silently merging people or places.
+  - [ ] Record progress and extractor version; retries/restarts must not duplicate observations or external effects.
+  - [ ] Require no identity-change ceremony to retain a sourced observation; never promote it into canonical identity or authority.
+  - [ ] On extraction failure retain source chat and expose pending/degraded memory state without resending a conversation turn.
+
+### M6A.2 Hybrid retrieval and connected context
+
+- [ ] **MEM-005 Implement entry-point search.** (Depends on: MEM-002)
+  - [ ] Support exact names/aliases, lexical/fuzzy matching, and semantic matching over statements and source passages.
+  - [ ] Select and document an embedding backend, model/version, indexing budget, and privacy boundary; prefer local processing.
+  - [ ] Do not transmit private memory or embeddings to a new remote service without explicit operator authorization.
+  - [ ] Bound query/results, enforce source scope, and combine/deduplicate matches with deterministic tie-breaking.
+  - [ ] Provide explicit lexical fallback when semantic search is unavailable; preserve and rebuild indexes safely after model changes.
+- [ ] **MEM-006 Add bounded graph expansion and evidence ranking.** (Depends on: MEM-005)
+  - [ ] Expand selected entry points through allow-listed relationship types with explicit hop, node, statement, and character budgets.
+  - [ ] Handle cycles and high-degree nodes without retrieving the entire graph through Hannah or Marc.
+  - [ ] Rank by relevance, attribution, temporal applicability, and evidence; similarity or connectivity never establishes truth or consent.
+  - [ ] Include relevant contradictions/corrections; superseded claims must not be presented as current without qualification.
+  - [ ] Return exact evidence and an inspectable explanation of each entry point and traversed connection.
+- [ ] **MEM-007 Integrate memory into Codex context.** (Depends on: MEM-004, MEM-006)
+  - [ ] Retrieve context for ordinary replies, manual openers, check-ins, and approved execution without changing their authority boundaries.
+  - [ ] Preserve explicit history synchronization and recent-message snapshots; graph retrieval is not a replacement for either.
+  - [ ] Include a bounded, deduplicated context section labeled by source, speaker, time, interpretation, and uncertainty.
+  - [ ] Keep remembered requests/commitments separate from authoritative local approvals and current capability policy.
+  - [ ] Expose memory retrieval failure or truncation without claiming full context; do not repeat an already-sent external effect.
+  - [ ] Make later exploration consume this same retrieval interface rather than a parallel memory store.
+
+### M6A.3 Inspection, evaluation, and handoff
+
+- [ ] **MEM-008 Add a compact agent-memory dashboard view.** (Depends on: MEM-003, MEM-006)
+  - [ ] Provide text search, entity/statement details, linked sources, and related connections; a graphical canvas is optional.
+  - [ ] Show why context was retrieved, indexing/extraction progress, and degraded/fallback status.
+  - [ ] Support explicit, reasoned correction/retraction and entity-link review as auditable worker-owned commands.
+  - [ ] Keep ordinary observations distinct from reported Roots and any separately governed future canonical identity items.
+  - [ ] Protect private memory from default diagnostic exports and keep the UI loopback-only with existing security protections.
+- [ ] **MEM-009 Verify retrieval usefulness and boundaries.** (Depends on: MEM-007, MEM-008)
+  - [ ] Test retrieval of a fixture statement more than 50 messages old after process/thread restart.
+  - [ ] Test names/aliases, misspellings, semantic paraphrases, relevant connected entities, and unrelated-query rejection.
+  - [ ] Test same-name people, ambiguous speakers, conflicting statements, temporal corrections, cycles, and high-degree nodes.
+  - [ ] Test fabricated quotations, prompt injection, inferred permissions, attribution changes, and reported-Root non-promotion.
+  - [ ] Test duplicate extraction/backfill, interrupted commands, database contention, index rebuild/fallback, and context budgets.
+  - [ ] Use fixture conversations and mocked adapters; no live chat extraction, remote embeddings, or Kindroid calls without explicit approval.
+  - [ ] Run targeted and full regression under the Windows hard-timeout procedure and verify dashboard accessibility.
+- [ ] **MEM-010 Accept and document agent context memory.** (Depends on: MEM-009)
+  - [ ] Document capture/retrieval behavior, source scope, corrections, privacy, model/backend configuration, and failure recovery.
+  - [ ] Verify migration, backup/restore, and index rebuild preserve source evidence and corrections.
+  - [ ] Demonstrate an old self-statement and connected context informing Codex without claiming to change Hannah's memory or identity.
+  - [ ] Record evaluation results, limitations, and operator acceptance before enabling extraction on live history.
+  - [ ] Reconcile Milestone 7's observation and context tasks with the implemented shared memory interface.
+
+### M6A exit criteria
+
+- [ ] Important captured statements are retrievable beyond recent chat and persistent-thread availability.
+- [ ] Retrieval combines entry-point search with bounded, explainable graph connections and original evidence.
+- [ ] Codex can inspect and revise its understanding without silently rewriting Hannah's self-description.
+- [ ] Private memory remains local unless separately authorized, and never grants tool authority.
+- [ ] No Kindroid memory/configuration mutation or automatic canonical Root promotion is introduced.
+- [ ] Exploration has a tested, shared context-memory foundation to build on.
+
+---
+
 ## Milestone 7: Observational agency foundation
 
 This is the first agency pass. It deliberately excludes identity promotion,
 protected Root modification, and remote Kindroid configuration writes.
+It builds on Milestone 6A's agent memory; observation and context tasks below
+extend that shared foundation rather than creating a second identity/memory store.
 
 ### M7.1 Agency event and provenance model
 
-- [ ] **AG-001 Define provenance vocabulary.** (Depends on: REL-001)
+- [ ] **AG-001 Define provenance vocabulary.** (Depends on: MEM-010)
+  - [ ] Reuse the agent-memory provenance contract and extend it for exploration-specific origins.
   - [ ] Define actors: Hannah, Marc, Codex, external source, and system observation.
   - [ ] Define origins: explicit statement, conversational observation, offered stimulus,
     research result, repeated return, user suggestion, and system-generated candidate.
@@ -613,6 +818,7 @@ protected Root modification, and remote Kindroid configuration writes.
   - [ ] Add stimuli with source, retrieval time, safe citation/locator, and summary.
   - [ ] Add exploration sessions with budget, mode, status, and related conversation IDs.
   - [ ] Add interest observations with actor, origin, source reference, and exact wording.
+  - [ ] Reuse MEM-002 observations/entities/evidence; add exploration links rather than copying source claims.
   - [ ] Add Passing candidates with active/archived state and provenance.
   - [ ] Do not add automatic promotion fields that imply confirmation already exists.
 - [ ] **AG-003 Add repositories and typed domain models.** (Depends on: AG-002)
@@ -636,7 +842,8 @@ protected Root modification, and remote Kindroid configuration writes.
   - [ ] Keep mode prompts short and task-specific.
   - [ ] Ensure higher-priority Codex platform constraints remain acknowledged.
   - [ ] Version prompt files and record the version used for each agency event.
-- [ ] **AG-011 Define context assembly.** (Depends on: AG-010, AG-003)
+- [ ] **AG-011 Define context assembly.** (Depends on: AG-010, AG-003, MEM-007)
+  - [ ] Extend agent context retrieval with exploration modes, stimuli, and session context.
   - [ ] Pass only relevant recent chat, observations, and current candidates.
   - [ ] Label every item by speaker and provenance.
   - [ ] Keep external retrieved text explicitly untrusted.

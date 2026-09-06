@@ -171,9 +171,32 @@ def _migration_2(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _migration_3(connection: sqlite3.Connection) -> None:
+    # Keep legacy primary keys stable: outbox, approvals, and activity refer to
+    # them. New locally captured messages acquire a separate remote alias later.
+    connection.execute("ALTER TABLE messages ADD COLUMN kindroid_id TEXT")
+    connection.execute("UPDATE messages SET kindroid_id = remote_id")
+    connection.execute("CREATE UNIQUE INDEX idx_messages_kindroid_id ON messages(kindroid_id)")
+    connection.execute("ALTER TABLE messages ADD COLUMN sync_after INTEGER")
+    connection.execute("""
+        CREATE TABLE generation_turns (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            ai_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            outbox_id TEXT NOT NULL UNIQUE REFERENCES outbox(id),
+            anchor_message_id TEXT NOT NULL REFERENCES messages(remote_id),
+            status TEXT NOT NULL CHECK(status IN ('generating', 'received', 'uncertain', 'reconciled')),
+            after_timestamp INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     (1, _migration_1),
     (2, _migration_2),
+    (3, _migration_3),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]
 

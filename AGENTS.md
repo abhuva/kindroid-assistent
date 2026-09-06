@@ -47,6 +47,7 @@ Documentation index:
 | `docs/adr/ADR-004-separate-consent-and-authority.md` | Hannah's consent versus Marc's external authority |
 | `docs/adr/ADR-005-local-dashboard-command-queue.md` | Dashboard and durable command decision |
 | `docs/adr/ADR-006-stage-dashboard-before-self-change.md` | Accepted delivery order |
+| `docs/adr/ADR-007-dashboard-initiative-budget.md` | Persistent dashboard check-in limit, precedence and accounting |
 | `relay_prompt.md` | Runtime trust, identity, and reply contract for the Codex relay |
 | `_archive/` | Legacy reference only |
 
@@ -61,6 +62,11 @@ Documentation index:
 - `command_queue.py`, `activity.py`, `worker.py`: durable commands, audit activity,
   worker phases, and interruptible runtime.
 - `server.py`, `web/`: combined relay/dashboard host, local HTTP API, and static UI.
+- `diagnostics.py`, `log_tail.py`: privacy-filtered, bounded diagnostic export and
+  shared bounded log reader. Export tests must use fixtures, not live state/logs.
+- `scripts/autostart.ps1`, `scripts/dashboard-autostart.pyw`: current-user Windows
+  sign-in task management and console-free launcher. Install/remove must not
+  start or stop a live relay; tests mock task registration and external calls.
 - `tests/`: executable description of shipped behavior.
 
 ## Non-negotiable invariants
@@ -140,6 +146,11 @@ Mandatory rules:
   captured output, and presence of a matching tool result before rerunning anything.
 - Before any potentially long verification, tell Marc what will run and preserve a
   concise progress checkpoint in the conversation.
+- UI behavior checks use Node.js with locked development dependencies: run
+  `npm ci --ignore-scripts` before verification. `npm test` exercises the actual
+  dashboard DOM and scripts with mocked responses and axe accessibility checks.
+  Pytest invokes these checks too when Node is installed. They do not replace
+  real-browser visual/native-dialog acceptance or authorize live Kindroid calls.
 
 Recommended PowerShell pattern (use a unique temporary directory):
 
@@ -148,12 +159,14 @@ $p = Start-Process .\.venv\Scripts\python.exe `
   -ArgumentList @('-m', 'pytest', 'tests/test_state.py', '-vv') `
   -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+$testProcessHandle = $p.Handle # Retain the handle so ExitCode survives process exit.
 if (-not $p.WaitForExit(30000)) {
   Stop-Process -Id $p.Id -Force
   throw "pytest exceeded 30 seconds"
 }
 Get-Content -LiteralPath $stdoutPath
 Get-Content -LiteralPath $stderrPath
+if ($p.ExitCode -ne 0) { throw "pytest failed with exit code $($p.ExitCode)" }
 ```
 
 ## Definition of done

@@ -146,3 +146,98 @@ def test_migration_failure_prevents_worker_start(monkeypatch, tmp_path: Path) ->
     with pytest.raises(RuntimeError, match="migration failed"):
         serve_dashboard(config)
     assert not started
+
+
+def test_worker_startup_failure_is_sanitized_and_prevents_http_start(
+    monkeypatch,
+    tmp_path: Path,
+    caplog,
+    capsys,
+) -> None:
+    config = replace(settings(tmp_path), web_port=0)
+    server_ran = False
+    stop_requested = threading.Event()
+
+    class FailingWorker:
+        def __init__(self, config, **kwargs):
+            self.config = config
+
+        def run(self):
+            raise RuntimeError("worker rejected kn_super-secret-value")
+
+        def stop(self):
+            stop_requested.set()
+
+    class ServerThatMustNotRun:
+        started = False
+        should_exit = False
+
+        def __init__(self, config):
+            pass
+
+        def run(self):
+            nonlocal server_ran
+            server_ran = True
+
+    monkeypatch.setattr("kindroid_relay.server.RelayWorker", FailingWorker)
+    monkeypatch.setattr("kindroid_relay.server.create_web_app", lambda *args: object())
+    monkeypatch.setattr("kindroid_relay.server.uvicorn.Server", ServerThatMustNotRun)
+    monkeypatch.setattr("kindroid_relay.server.ensure_port_available", lambda *args: None)
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(RuntimeError, match="worker failed during startup"):
+            serve_dashboard(config)
+
+    captured = capsys.readouterr()
+    visible_output = caplog.text + captured.out + captured.err
+    assert "kn_super-secret-value" not in visible_output
+    assert "[REDACTED_KINDROID_KEY]" in caplog.text
+    assert stop_requested.is_set()
+    assert not server_ran
+    assert not config.state_path.with_suffix(".lock").exists()
+
+
+def test_keyboard_interrupt_stops_worker_and_releases_process_lock(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(settings(tmp_path), web_port=0)
+    worker_stopped = threading.Event()
+
+    class FakeWorker:
+        def __init__(self, config, **kwargs):
+            self.config = config
+            self.stop_event = threading.Event()
+
+        def run(self):
+            from kindroid_relay.activity import WorkerPhase
+            from kindroid_relay.state import RelayState
+
+            with RelayState(self.config.state_path, migrate=False) as state:
+                state.worker_status.update(WorkerPhase.IDLE)
+            self.stop_event.wait(2)
+            worker_stopped.set()
+
+        def stop(self):
+            self.stop_event.set()
+
+    class InterruptingServer:
+        started = True
+        should_exit = False
+
+        def __init__(self, config):
+            pass
+
+        def run(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("kindroid_relay.server.RelayWorker", FakeWorker)
+    monkeypatch.setattr("kindroid_relay.server.create_web_app", lambda *args: object())
+    monkeypatch.setattr("kindroid_relay.server.uvicorn.Server", InterruptingServer)
+    monkeypatch.setattr("kindroid_relay.server.ensure_port_available", lambda *args: None)
+
+    with pytest.raises(KeyboardInterrupt):
+        serve_dashboard(config)
+
+    assert worker_stopped.is_set()
+    assert not config.state_path.with_suffix(".lock").exists()

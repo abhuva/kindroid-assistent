@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -229,6 +230,31 @@ def test_worker_status_preserves_phase_start_on_heartbeat(tmp_path: Path) -> Non
         assert heartbeat.phase_started_at == initial.phase_started_at
 
 
+def test_activity_retention_preserves_safety_audit_events(tmp_path: Path) -> None:
+    now = 2_000_000_000
+    with RelayState(tmp_path / "state.sqlite3") as state:
+        operational = state.activity.add(
+            "worker_phase",
+            ActivitySeverity.INFO,
+            "Old operational event",
+            details={"phase": "idle"},
+        )
+        safety = state.activity.add(
+            "outbound_sent",
+            ActivitySeverity.INFO,
+            "Old safety audit event",
+            details={"outbox_id": "outbox-1"},
+        )
+        with state.connection:
+            state.connection.execute(
+                "UPDATE activity_events SET created_at = ? WHERE id IN (?, ?)",
+                (now - 31 * 86400, operational.id, safety.id),
+            )
+
+        assert state.activity.prune(30, now=now) == 1
+        assert [item.id for item in state.activity.after()] == [safety.id]
+
+
 def test_sqlite_connection_cannot_cross_threads(tmp_path: Path) -> None:
     state = RelayState(tmp_path / "state.sqlite3")
     errors: list[Exception] = []
@@ -260,3 +286,171 @@ def test_state_factory_closes_request_scoped_connections(tmp_path: Path) -> None
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         connection.execute("SELECT 1")
+
+
+def test_request_connections_read_while_worker_connection_is_writing(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    with RelayState(path):
+        pass
+    factory = RelayStateFactory(path)
+    worker_ready = threading.Event()
+    release_worker = threading.Event()
+    failures: list[Exception] = []
+
+    def hold_worker_transaction() -> None:
+        try:
+            with factory.connect() as state:
+                state.connection.execute("BEGIN IMMEDIATE")
+                state.connection.execute(
+                    "INSERT INTO metadata(key, value) VALUES('worker_write', 'open')"
+                )
+                worker_ready.set()
+                if not release_worker.wait(2):
+                    raise AssertionError("test did not release worker transaction")
+                state.connection.commit()
+        except Exception as exc:  # pragma: no cover - assertion reports details
+            failures.append(exc)
+
+    worker_thread = threading.Thread(target=hold_worker_transaction)
+    worker_thread.start()
+    assert worker_ready.wait(1)
+    started = time.monotonic()
+    try:
+        with factory.connect() as request_state:
+            snapshot = request_state.status()
+    finally:
+        release_worker.set()
+        worker_thread.join(timeout=2)
+
+    assert not worker_thread.is_alive()
+    assert failures == []
+    assert snapshot["pending_messages"] == 0
+    assert time.monotonic() - started < 1
+
+
+def test_request_can_enqueue_command_while_worker_writes_other_tables(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    with RelayState(path):
+        pass
+    factory = RelayStateFactory(path)
+    worker_ready = threading.Event()
+    request_ready = threading.Event()
+    release_worker = threading.Event()
+    enqueue_started = threading.Event()
+    command_ids: list[str] = []
+    failures: list[Exception] = []
+
+    def hold_worker_transaction() -> None:
+        try:
+            with factory.connect() as state:
+                state.connection.execute("BEGIN IMMEDIATE")
+                state.connection.execute(
+                    "INSERT INTO metadata(key, value) VALUES('worker_cycle', 'active')"
+                )
+                worker_ready.set()
+                if not release_worker.wait(2):
+                    raise AssertionError("test did not release worker transaction")
+                state.connection.commit()
+        except Exception as exc:  # pragma: no cover - assertion reports details
+            failures.append(exc)
+
+    def enqueue_request() -> None:
+        try:
+            with factory.connect() as state:
+                request_ready.set()
+                assert worker_ready.wait(1)
+                state.connection.set_trace_callback(
+                    lambda statement: (
+                        enqueue_started.set()
+                        if "BEGIN IMMEDIATE" in statement
+                        else None
+                    )
+                )
+                command, _ = state.commands.enqueue(
+                    CommandType.TRIGGER_INITIATIVE,
+                    {},
+                    idempotency_key="concurrent-trigger",
+                )
+                command_ids.append(command.id)
+        except Exception as exc:  # pragma: no cover - assertion reports details
+            failures.append(exc)
+
+    worker_thread = threading.Thread(target=hold_worker_transaction)
+    request_thread = threading.Thread(target=enqueue_request)
+    request_thread.start()
+    assert request_ready.wait(1)
+    worker_thread.start()
+    assert enqueue_started.wait(1)
+    time.sleep(0.05)
+    release_started = time.monotonic()
+    release_worker.set()
+    worker_thread.join(timeout=2)
+    request_thread.join(timeout=2)
+
+    assert not worker_thread.is_alive()
+    assert not request_thread.is_alive()
+    assert failures == []
+    assert len(command_ids) == 1
+    assert time.monotonic() - release_started < 1
+    with factory.connect() as state:
+        command = state.commands.get(command_ids[0])
+        assert command is not None
+        assert command.status == CommandStatus.QUEUED
+
+
+def test_short_request_transaction_does_not_stall_worker_polling(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    with RelayState(path):
+        pass
+    factory = RelayStateFactory(path)
+    worker_ready = threading.Event()
+    begin_poll = threading.Event()
+    poll_write_started = threading.Event()
+    poll_completed = threading.Event()
+    failures: list[Exception] = []
+
+    def poll_with_worker_connection() -> None:
+        try:
+            with factory.connect() as state:
+                state.connection.set_trace_callback(
+                    lambda statement: (
+                        poll_write_started.set()
+                        if "DELETE FROM history_requests" in statement
+                        else None
+                    )
+                )
+                worker_ready.set()
+                if not begin_poll.wait(1):
+                    raise AssertionError("test did not start worker poll")
+                state.record_history_request(100)
+                poll_completed.set()
+        except Exception as exc:  # pragma: no cover - assertion reports details
+            failures.append(exc)
+
+    worker_thread = threading.Thread(target=poll_with_worker_connection)
+    worker_thread.start()
+    assert worker_ready.wait(1)
+    with factory.connect() as request_state:
+        request_state.connection.execute("BEGIN IMMEDIATE")
+        request_state.connection.execute(
+            "INSERT INTO metadata(key, value) VALUES('request_write', 'active')"
+        )
+        begin_poll.set()
+        assert poll_write_started.wait(1)
+        time.sleep(0.05)
+        released_at = time.monotonic()
+        request_state.connection.commit()
+
+    assert poll_completed.wait(1)
+    worker_thread.join(timeout=2)
+    assert not worker_thread.is_alive()
+    assert failures == []
+    assert time.monotonic() - released_at < 1
+    with factory.connect() as state:
+        assert state.history_request_count() == 1

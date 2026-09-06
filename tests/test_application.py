@@ -34,6 +34,10 @@ def test_local_application_operations(tmp_path: Path) -> None:
         assert state.get_meta("pause_reason") == "testing"
         resume_relay(state)
         assert not state.is_paused()
+        assert [event.kind for event in state.activity.after()] == [
+            "relay_paused",
+            "relay_resumed",
+        ]
 
         approval_id = state.add_approval(
             "m1", ActionProposal("A task", "Do exactly one thing", "low")
@@ -65,6 +69,12 @@ def test_application_executes_and_records_approval(tmp_path: Path) -> None:
 
         assert actual == result
         assert state.get_approval(approval_id)["status"] == "executed"
+        assert [event.kind for event in state.activity.after() if event.kind != "message_received"] == [
+            "approval_status",
+            "codex_started",
+            "codex_completed",
+            "approval_status",
+        ]
 
 
 def test_application_records_failed_execution(tmp_path: Path) -> None:
@@ -89,4 +99,47 @@ def test_application_records_failed_execution(tmp_path: Path) -> None:
         row = state.get_approval(approval_id)
         assert row["status"] == "failed"
         assert row["result"] == "execution failed"
+        kinds = [event.kind for event in state.activity.after() if event.kind != "message_received"]
+        assert kinds == [
+            "approval_status",
+            "codex_started",
+            "codex_failed",
+            "approval_status",
+        ]
 
+
+def test_approval_failure_redacts_credentials_from_persisted_state(
+    tmp_path: Path,
+) -> None:
+    config = settings(tmp_path)
+
+    class LeakingAgent:
+        def execute_approved(self, *args):
+            raise RuntimeError(
+                "PROMPT_SECRET_SENTINEL kn_fake-secret Bearer abc.def "
+                "Cookie: session-value"
+            )
+
+    with RelayState(config.state_path) as state:
+        approval_id = state.add_approval(
+            "m1", ActionProposal("A task", "Do exactly one thing", "low")
+        )
+        application = RelayApplication(
+            config,
+            state,
+            FakeKindroid(),
+            lambda: nullcontext(LeakingAgent()),
+        )
+
+        with pytest.raises(RuntimeError):
+            application.execute_approval(approval_id)
+
+        persisted = state.get_approval(approval_id)["result"]
+        assert "kn_fake" not in persisted
+        assert "abc.def" not in persisted
+        assert "session-value" not in persisted
+        serialized_events = repr(state.activity.after())
+        assert "kn_fake" not in serialized_events
+        assert "abc.def" not in serialized_events
+        assert "session-value" not in serialized_events
+        assert "PROMPT_SECRET_SENTINEL" not in serialized_events

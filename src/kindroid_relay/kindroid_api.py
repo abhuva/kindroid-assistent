@@ -106,7 +106,9 @@ class KindroidClient:
                 delay = retry_after if retry_after is not None else 2**attempt
                 time.sleep(min(delay, 30))
                 continue
-            detail = response.text.strip().replace("\n", " ")[:300] or "no detail"
+            # Response bodies are untrusted and may echo credentials or private
+            # content. Keep persisted/logged failures to the protocol reason.
+            detail = response.reason_phrase or "HTTP error"
             raise KindroidAPIError(
                 operation,
                 response.status_code,

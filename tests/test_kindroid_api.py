@@ -29,6 +29,8 @@ def test_group_api_request_shapes() -> None:
             )
         if request.url.path.endswith("groupchats-get-turn"):
             return httpx.Response(200, text="ai1")
+        if request.url.path.endswith("groupchats-ai-response"):
+            return httpx.Response(200, text="A complete generated reply")
         return httpx.Response(200, text="")
 
     http = httpx.Client(
@@ -42,7 +44,7 @@ def test_group_api_request_shapes() -> None:
         "persona-1", name="Codex Test", gender="Nonbinary", backstory="External"
     )
     assert client.get_turn("group", allow_user=False) == "ai1"
-    client.generate_ai_response("group", "ai1")
+    assert client.generate_ai_response("group", "ai1") == "A complete generated reply"
 
     assert page.messages[0].display_name == "Hannah"
     assert page.messages[0].sender_type == "ai"
@@ -56,6 +58,7 @@ def test_group_api_request_shapes() -> None:
     }
     assert json.loads(requests[3].content)["allow_user"] is False
     assert json.loads(requests[4].content)["ai_id"] == "ai1"
+    assert json.loads(requests[4].content)["stream"] is False
 
 
 def test_history_rate_limit_is_not_retried() -> None:
@@ -66,7 +69,10 @@ def test_history_rate_limit_is_not_retried() -> None:
         attempts += 1
         return httpx.Response(
             429,
-            text="Too Many Requests (API limit)",
+            text=(
+                "private response kn_fake-secret Authorization: hidden "
+                "Cookie: session-value"
+            ),
             headers={"Retry-After": "7200"},
         )
 
@@ -80,3 +86,6 @@ def test_history_rate_limit_is_not_retried() -> None:
 
     assert attempts == 1
     assert caught.value.retry_after_seconds == 7200
+    assert "private response" not in str(caught.value)
+    assert "kn_fake" not in str(caught.value)
+    assert "session-value" not in str(caught.value)

@@ -38,6 +38,8 @@ COMMON_DETAIL_FIELDS = frozenset(
         "cooldown_until",
         "display_name",
         "error_type",
+        "failure_stage",
+        "http_status",
         "group_id",
         "message_id",
         "outbox_id",
@@ -47,8 +49,12 @@ COMMON_DETAIL_FIELDS = frozenset(
         "request_count",
         "retry_after_seconds",
         "risk",
+        "sender_type",
         "source_message_id",
+        "status",
         "turn_count",
+        "limit",
+        "previous_limit",
     }
 )
 
@@ -72,12 +78,40 @@ ACTIVITY_KINDS = frozenset(
         "outbound_sending",
         "outbound_sent",
         "outbound_uncertain",
+        "generation_uncertain",
+        "generation_history_fallback",
         "identity_fallback",
         "initiative_due",
+        "initiative_limit_changed",
         "initiative_skipped",
         "initiative_offered",
         "initiative_answered",
         "initiative_declined",
+        "command_queued",
+        "command_started",
+        "command_completed",
+        "command_failed",
+        "command_interrupted",
+        "command_cancelled",
+        "approval_created",
+        "approval_status",
+        "database_migrated",
+    }
+)
+
+
+SAFETY_CRITICAL_ACTIVITY_KINDS = frozenset(
+    {
+        "relay_paused",
+        "initiative_limit_changed",
+        "relay_resumed",
+        "outbound_created",
+        "outbound_sending",
+        "outbound_sent",
+        "outbound_uncertain",
+        "generation_uncertain",
+        "generation_history_fallback",
+        "identity_fallback",
         "command_queued",
         "command_started",
         "command_completed",
@@ -174,6 +208,18 @@ class ActivityStore:
             (max(0, after_id), max(1, min(limit, 500))),
         ).fetchall()
         return [self._record(row) for row in rows]
+
+    def prune(self, retention_days: int, *, now: int | None = None) -> int:
+        """Remove expired operational noise while retaining safety audit events."""
+        cutoff = (int(time.time()) if now is None else now) - retention_days * 86400
+        placeholders = ",".join("?" for _ in SAFETY_CRITICAL_ACTIVITY_KINDS)
+        with self.connection:
+            cursor = self.connection.execute(
+                f"DELETE FROM activity_events WHERE created_at < ? "
+                f"AND kind NOT IN ({placeholders})",
+                (cutoff, *sorted(SAFETY_CRITICAL_ACTIVITY_KINDS)),
+            )
+        return cursor.rowcount
 
 
 class WorkerStatusStore:

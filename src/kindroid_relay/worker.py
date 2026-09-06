@@ -59,6 +59,9 @@ class RelayWorker:
                 state,
                 kindroid,
                 agent_factory,
+                phase_context=lambda phase, note: self._scoped_phase(
+                    state, phase, note
+                ),
             )
 
     def _application(self, state: RelayState) -> AbstractContextManager[Any]:
@@ -104,6 +107,33 @@ class RelayWorker:
                 correlation_id=command_id,
             )
 
+    @contextmanager
+    def _scoped_phase(
+        self,
+        state: RelayState,
+        phase: WorkerPhase,
+        note: str,
+    ) -> Iterator[None]:
+        previous = state.worker_status.get()
+        command_id = previous.active_command_id if previous else None
+        self._phase(state, phase, command_id=command_id, note=note)
+        try:
+            yield
+        finally:
+            if state.is_paused():
+                self._phase(
+                    state,
+                    WorkerPhase.PAUSED,
+                    note=state.get_meta("pause_reason", "") or "",
+                )
+            elif previous is not None:
+                self._phase(
+                    state,
+                    previous.phase,
+                    command_id=previous.active_command_id,
+                    note=previous.note,
+                )
+
     def _recover(self, state: RelayState) -> None:
         recovered = state.commands.recover_interrupted()
         must_pause = False
@@ -139,7 +169,9 @@ class RelayWorker:
         if command.command_type == CommandType.START_CONVERSATION:
             return {"handled": application.start_conversation()}
         if command.command_type == CommandType.TRIGGER_INITIATIVE:
-            return {"handled": application.trigger_initiative()}
+            return application.trigger_initiative()
+        if command.command_type == CommandType.SET_INITIATIVE_LIMIT:
+            return application.set_initiative_limit(command.payload["limit"])
         if command.command_type == CommandType.RESUME:
             return {"status": resume_relay(application.state)}
         if command.command_type == CommandType.REJECT_APPROVAL:
@@ -209,10 +241,12 @@ class RelayWorker:
         state.activity.add(
             "command_completed",
             ActivitySeverity.INFO,
-            f"Command {command.command_type.value} completed",
+            f"Command {command.command_type.value} completed"
+            + (f": {result['initiative_outcome']}" if command.command_type == CommandType.TRIGGER_INITIATIVE else ""),
             details={
                 "command_id": command.id,
                 "command_type": command.command_type.value,
+                **({"outcome": result["initiative_outcome"]} if command.command_type == CommandType.TRIGGER_INITIATIVE else {}),
             },
             correlation_id=command.id,
         )
@@ -220,6 +254,7 @@ class RelayWorker:
     def run(self) -> None:
         factory = RelayStateFactory(self.settings.state_path)
         with factory.connect() as state:
+            state.activity.prune(self.settings.activity_retention_days)
             self._phase(state, WorkerPhase.STARTING)
             state.activity.add(
                 "process_started",
@@ -257,23 +292,42 @@ class RelayWorker:
                                 now + self.settings.idle_poll_seconds,
                             )
                         elif cooldown_until > now:
+                            cooldown_display = (
+                                datetime.fromtimestamp(cooldown_until)
+                                .astimezone()
+                                .isoformat()
+                            )
                             self._phase(
                                 state,
                                 WorkerPhase.DEGRADED,
                                 note=(
                                     "Kindroid history polling is cooling down until "
-                                    f"{datetime.fromtimestamp(cooldown_until).astimezone().isoformat()}"
+                                    f"{cooldown_display}"
                                 ),
                             )
                             next_poll_at = max(next_poll_at, float(cooldown_until))
                         elif now >= next_poll_at or initiative_due:
                             self._phase(state, WorkerPhase.POLLING)
+                            state.activity.add(
+                                "relay_cycle_started",
+                                ActivitySeverity.INFO,
+                                "Relay polling cycle started",
+                                details={
+                                    "request_count": state.history_request_count()
+                                },
+                            )
                             try:
                                 handled = application.run_once()
                             except HistoryCooldownError as exc:
                                 logger.warning(
                                     "Kindroid history polling is cooling down until %s",
                                     exc.retry_at,
+                                )
+                                state.activity.add(
+                                    "relay_cycle_completed",
+                                    ActivitySeverity.WARNING,
+                                    "Relay polling cycle deferred by history cooldown",
+                                    details={"outcome": "history_cooldown"},
                                 )
                                 self._phase(
                                     state,
@@ -298,7 +352,23 @@ class RelayWorker:
                                     time.time() + self.settings.idle_poll_seconds
                                 )
                             else:
-                                self._phase(state, WorkerPhase.IDLE)
+                                state.activity.add(
+                                    "relay_cycle_completed",
+                                    ActivitySeverity.INFO,
+                                    "Relay polling cycle completed",
+                                    details={
+                                        "request_count": state.history_request_count(),
+                                        "turn_count": handled,
+                                    },
+                                )
+                                if state.is_paused():
+                                    self._phase(
+                                        state,
+                                        WorkerPhase.PAUSED,
+                                        note=state.get_meta("pause_reason", "") or "",
+                                    )
+                                else:
+                                    self._phase(state, WorkerPhase.IDLE)
                                 delay = self._poll_delay(handled)
                                 next_poll_at = time.time() + delay
                         else:
@@ -346,11 +416,5 @@ def request_pause(
             }
         )
         pause_relay(state, safe_reason)
-        state.activity.add(
-            "relay_paused",
-            ActivitySeverity.WARNING,
-            "Relay pause requested",
-            details={"reason": safe_reason},
-        )
     wake_event.set()
     return in_flight

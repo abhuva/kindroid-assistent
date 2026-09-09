@@ -1,6 +1,6 @@
 {
   "name": "kindroid-relay-ui-tests",
   "private": true,
-  "scripts": {"test": "node tests/ui_api_client_test.cjs && node --test --test-timeout=15000 tests/ui_dashboard_test.cjs"},
+  "scripts": {"test": "node tests/ui_api_client_test.cjs && node --test --test-timeout=20000 --test-skip-pattern=\"axe scans\" tests/ui_dashboard_test.cjs && node --test --test-timeout=20000 --test-name-pattern=\"axe scans\" tests/ui_dashboard_test.cjs"},
   "devDependencies": {"jsdom": "27.0.1", "axe-core": "4.13.0"}
 }

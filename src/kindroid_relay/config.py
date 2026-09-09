@@ -50,8 +50,8 @@ def _boolean(values: dict[str, str], name: str, default: bool) -> bool:
     raise ConfigurationError(f"{name} must be true or false")
 
 
-def _quiet_hours(values: dict[str, str]) -> tuple[int, int] | None:
-    raw = values.get("RELAY_INITIATIVE_QUIET_HOURS", "").strip()
+def _quiet_hours(values: dict[str, str], name: str = "RELAY_INITIATIVE_QUIET_HOURS", default: str = "") -> tuple[int, int] | None:
+    raw = values.get(name, default).strip()
     if not raw:
         return None
     try:
@@ -66,23 +66,23 @@ def _quiet_hours(values: dict[str, str]) -> tuple[int, int] | None:
         return minutes(start_raw), minutes(end_raw)
     except ValueError as exc:
         raise ConfigurationError(
-            "RELAY_INITIATIVE_QUIET_HOURS must look like 00:00-08:00"
+            f"{name} must look like 00:00-08:00"
         ) from exc
 
 
-def _schedule_hours(values: dict[str, str]) -> tuple[int, ...] | None:
-    raw = values.get("RELAY_INITIATIVE_SCHEDULE_HOURS", "").strip()
+def _schedule_hours(values: dict[str, str], name: str = "RELAY_INITIATIVE_SCHEDULE_HOURS", default: str = "") -> tuple[int, ...] | None:
+    raw = values.get(name, default).strip()
     if not raw:
         return None
     try:
         hours = tuple(sorted({int(part.strip()) for part in raw.split(",")}))
     except ValueError as exc:
         raise ConfigurationError(
-            "RELAY_INITIATIVE_SCHEDULE_HOURS must be comma-separated hours"
+            f"{name} must be comma-separated hours"
         ) from exc
     if not hours or any(hour < 0 or hour > 23 for hour in hours):
         raise ConfigurationError(
-            "RELAY_INITIATIVE_SCHEDULE_HOURS entries must be between 0 and 23"
+            f"{name} entries must be between 0 and 23"
         )
     return hours
 
@@ -131,6 +131,26 @@ class Settings:
     activity_retention_days: int = 30
     log_max_bytes: int = 5_242_880
     log_backup_count: int = 5
+    initiative_idle_seconds: int = 300
+    memory_enabled: bool = False
+    memory_auto_capture: bool = False
+    memory_max_messages_24h: int = 30
+    memory_model_path: str = ""
+    memory_model_revision: str = "operator-local-v1"
+    memory_extractor: str = "semantic"
+    memory_extraction_timeout_seconds: int = 45
+    exploration_enabled: bool = False
+    exploration_auto_interpret: bool = True
+    exploration_max_sessions_24h: int = 3
+    curiosity_enabled: bool = False
+    curiosity_schedule_hours: tuple[int, ...] | None = (10, 16)
+    curiosity_interval_seconds: int = 21600
+    curiosity_jitter_seconds: int = 1800
+    curiosity_quiet_hours: tuple[int, int] | None = (1320, 480)
+    curiosity_idle_seconds: int = 1800
+    curiosity_max_attempts_24h: int = 2
+    curiosity_max_interpretations_24h: int = 4
+    curiosity_window_seconds: int = 180
 
     @classmethod
     def load(cls, env_file: str | Path = "kindroid.env") -> "Settings":
@@ -193,6 +213,20 @@ class Settings:
                 "RELAY_WORKER_HEARTBEAT_SECONDS"
             )
 
+        memory_extractor = values.get("RELAY_MEMORY_EXTRACTOR", "semantic").strip()
+        if memory_extractor not in {"semantic", "local"}:
+            raise ConfigurationError("RELAY_MEMORY_EXTRACTOR must be semantic or local")
+        memory_timeout = _integer(values, "RELAY_MEMORY_EXTRACTION_TIMEOUT_SECONDS", 45, 5)
+        if memory_timeout > 120:
+            raise ConfigurationError("RELAY_MEMORY_EXTRACTION_TIMEOUT_SECONDS must be at most 120")
+        curiosity_interval = _integer(values, 'RELAY_CURIOSITY_INTERVAL_SECONDS', 21600, 3600)
+        curiosity_jitter = _integer(values, 'RELAY_CURIOSITY_JITTER_SECONDS', 1800, 0)
+        curiosity_window = _integer(values, 'RELAY_CURIOSITY_WINDOW_SECONDS', 180, 30)
+        if curiosity_jitter >= curiosity_interval or curiosity_jitter > 86400:
+            raise ConfigurationError('Curiosity jitter must be less than the interval and at most 86400 seconds')
+        if curiosity_window > 900:
+            raise ConfigurationError('Curiosity window must be at most 900 seconds')
+
         return cls(
             api_key=api_key,
             group_id=group_id,
@@ -224,6 +258,7 @@ class Settings:
                 values, "RELAY_INITIATIVE_MAX_CHECKS_24H", DEFAULT_INITIATIVE_LIMIT, 1
             ),
             initiative_quiet_hours=_quiet_hours(values),
+            initiative_idle_seconds=_integer(values, 'RELAY_INITIATIVE_IDLE_SECONDS', 300, 60),
             state_path=Path(
                 values.get("RELAY_STATE_PATH", project_root / "var" / "relay.sqlite3")
             ).resolve(),
@@ -282,6 +317,25 @@ class Settings:
             log_backup_count=_integer(
                 values, "RELAY_LOG_BACKUP_COUNT", 5, 1
             ),
+            memory_enabled=_boolean(values, "RELAY_MEMORY_ENABLED", False),
+            exploration_enabled=_boolean(values, "RELAY_EXPLORATION_ENABLED", False),
+            exploration_auto_interpret=_boolean(values, "RELAY_EXPLORATION_AUTO_INTERPRET", True),
+            exploration_max_sessions_24h=_integer(values, "RELAY_EXPLORATION_MAX_SESSIONS_24H", 3, 1),
+            curiosity_enabled=_boolean(values, 'RELAY_CURIOSITY_ENABLED', False),
+            curiosity_schedule_hours=_schedule_hours(values, 'RELAY_CURIOSITY_SCHEDULE_HOURS', '10,16'),
+            curiosity_interval_seconds=curiosity_interval,
+            curiosity_jitter_seconds=curiosity_jitter,
+            curiosity_quiet_hours=_quiet_hours(values, 'RELAY_CURIOSITY_QUIET_HOURS', '22:00-08:00'),
+            curiosity_idle_seconds=_integer(values, 'RELAY_CURIOSITY_IDLE_SECONDS', 1800, 300),
+            curiosity_max_attempts_24h=_integer(values, 'RELAY_CURIOSITY_MAX_ATTEMPTS_24H', 2, 1),
+            curiosity_max_interpretations_24h=_integer(values, 'RELAY_CURIOSITY_MAX_INTERPRETATIONS_24H', 4, 0),
+            curiosity_window_seconds=curiosity_window,
+            memory_auto_capture=_boolean(values, "RELAY_MEMORY_AUTO_CAPTURE", False),
+            memory_max_messages_24h=_integer(values, "RELAY_MEMORY_MAX_MESSAGES_24H", 30, 1),
+            memory_model_path=values.get("RELAY_MEMORY_MODEL_PATH", "").strip(),
+            memory_model_revision=values.get("RELAY_MEMORY_MODEL_REVISION", "operator-local-v1").strip(),
+            memory_extractor=memory_extractor,
+            memory_extraction_timeout_seconds=memory_timeout,
         )
 
     def ensure_runtime_directories(self) -> None:

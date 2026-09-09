@@ -20,6 +20,10 @@ class CommandSubmission(StrictModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+class MemorySubmission(CommandSubmission):
+    payload: dict[str, Any]
+
+
 class PauseRequest(StrictModel):
     reason: str = Field(default="paused from dashboard", max_length=500)
 

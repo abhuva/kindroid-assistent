@@ -13,8 +13,78 @@ The previous Gemini scheduler and custom MCP bridge are preserved unchanged in
 
 ## Setup
 
+**Discovery and bounded experiences** are available under **Schedule → Discovery
+sources & follow-through**. Choose catalog/memory, creative possibilities,
+previously chosen interests, world news or an optional public local-news area.
+Opt-in follow-through gives a new selected curiosity one bounded Wikipedia
+reference lookup, one result and an optional reflection. Private topics need a
+locally approved public search phrase; this does not add publishing or account
+access. News/research are off by default and old invitations are not backfilled.
+Back up and safely restart for migration 11, then reload the dashboard. See
+[controls, exact scope, recovery and acceptance](docs/discovery-and-experiences.md).
+
+Agent context memory (Milestone 6A) is implemented for local evaluation, with
+automatic capture and Codex injection **off by default**. The dashboard offers
+source-linked observation saving, search, corrections, and reviewed graph links.
+When explicitly enabled, semantic Codex extraction forms observations and entity
+connections automatically; manual saving is optional. This adds isolated Codex
+calls, not Kindroid history reads or conversation replies. Set
+`RELAY_MEMORY_ENABLED=true` and `RELAY_MEMORY_AUTO_CAPTURE=true` only after operator
+acceptance; `RELAY_MEMORY_EXTRACTOR=semantic` is the default backend.
+It supplements Codex's context, not Hannah's identity or Kindroid memory. See
+[agent memory configuration, limitations, and acceptance](docs/agent-memory.md).
+Live release/feature acceptance remains outstanding; upgrading alone does not
+extract or index existing chat.
+
+Observational exploration (Milestone 7) is available for local evaluation,
+also **off by default**. The dashboard's **Exploration / Passing candidates** panel
+offers bounded, source-tracked invitations from a local topic catalog and memory,
+with a separate daily budget and reversible candidate archival. Responses never
+automatically become preferences or start a Codex reply/tool chain. Only the
+separately opted-in bounded public experience above adds research; no identity
+changes are included. See [configuration, recovery, and
+acceptance limitations](docs/exploration.md); `RELAY_EXPLORATION_ENABLED` remains
+false until explicit operator acceptance.
+
+New exploration sessions now interpret confirmed replies, link reported choices
+or alternatives to Passing candidates, and acknowledge clear interest. Ambiguity
+allows one optional clarification only. This uses up to two isolated Codex calls
+per session; interpretation itself does not execute research or adopt a permanent preference.
+For an already completed invitation, use **Interpret response** in its session
+details instead of sending another invitation. `RELAY_EXPLORATION_AUTO_INTERPRET=false`
+disables automatic follow-through for new sessions without removing manual review.
+
+In the Codex/Hannah group, a history-confirmed generic `ai` response can be
+attributed to Hannah when it is linked to her requested generation, its name
+matches, and confirmed group history has no conflicting AI participants. It does
+not require manual review just because Kindroid omits the concrete sender ID.
+Raw sender metadata and `[CODEX]:` attribution remain intact; this assumes Hannah
+is the group's only AI companion, not a general multi-companion identity rule.
+
+Review-only or failed exploration interpretations remain visible but no longer
+block future scheduled check-ins or invitations. Active follow-ups and uncertain
+deliveries still block them. Existing reviews are not retried or answered on
+upgrade. Safely restart the host to load this change; it needs no migration or
+schedule re-save. See [ADR-017](docs/adr/ADR-017-exploration-review-and-role-attribution.md).
+
 Requires Python 3.10+, a working local Codex login, and a Kindroid subscription
 with API access to an existing group chat.
+
+The **Operations → Garden** panel shows versioned Passing seeds, source-linked
+responses and their history. Migration 8 preserves existing candidates without
+replaying messages or promoting interests. Administrative annotations require a
+reason and are Marc's, not Hannah's choices. Roots/Growing initialization and
+project execution remain separate work. See [Garden behavior and upgrade](docs/garden.md).
+
+**Scheduled curiosity (Milestone 9.1)** is available independently of social
+check-ins in the `serve` host, but remains off by default. With exploration enabled,
+set `RELAY_CURIOSITY_ENABLED=true` and restart to schedule future invitations
+(default local hours 10 and 16). Quiet hours, idle-conversation checks, separate
+attempt/call reservations and the shared exploration/history budgets apply.
+Operations → Exploration shows next due time and skip/outcome history. See
+[configuration, timing, safety and acceptance](docs/scheduled-curiosity.md).
+M9.2's first bounded experience/reflection slice is separately opted in above;
+project execution remains deferred.
 
 ```powershell
 python -m venv .venv
@@ -69,16 +139,58 @@ command remains available as a headless recovery mode.
 
 The dashboard includes status, current command and elapsed time, schedule and
 quota, recent command outcomes, delivery health, approvals, activity, and group
-messages. Activity and messages are newest first. The compact, full-width desktop
-layout places activity and messages beside an operations sidebar; narrower screens stack these
+messages. A compact second-row tab bar separates **Info** (status, controls,
+check-in budget, activity feed, and messages), **Operations** (current activity,
+delivery health, approvals, agent context memory, exploration, garden, and diagnostic log),
+and **Schedule** (tick allocation, dead time, timeline and rolling limits).
+Info opens by default. Switch tabs with a click or the Left/Right, Home, and End
+keys; switching preserves filters and loaded content without submitting commands.
+Related activity links switch to Info automatically. Normal status polling
+continues on every tab; memory, exploration, and logs retain their explicit
+load/refresh controls.
+Activity and messages are newest first. The compact, full-width desktop layout
+places the feeds beside the controls and budget; narrower screens stack these
 sections. Feeds scroll independently and support keyboard focus. Recent commands
 and budget rules expand on demand; current errors, delivery warnings, and approvals
 remain outside collapsed sections. Refresh the page to load presentation updates;
 no relay restart is needed for static HTML/CSS changes. Activity filters search the
 250 events retained in the page; linked IDs open local record details. Load older
-messages explicitly (50 at a time, at most 500 displayed); Refresh returns to the
-latest messages. Speaker labels supplement, never replace, stored name/sender
+messages explicitly (50 at a time, at most 500 displayed); **Reload saved messages**
+returns to the latest locally stored messages, without contacting Kindroid.
+Speaker labels supplement, never replace, stored name/sender
 metadata; they are not proof of per-message identity or approval authority.
+
+Use **Messages → Sync Kindroid history** to request a fresh history pull. This
+queues one serialized worker operation, including pagination when needed, then
+reloads the saved messages automatically. Its inline status survives page reloads
+through the command history and reports new-message counts or a specific blocker:
+API cooldown, exhausted rolling allowance, not-yet-confirmed local messages, or
+ambiguous delivery/generation. Normal minimum spacing and every page's history
+budget still apply; there is no force/bypass option or automatic retry loop.
+
+Sync works while paused and never resumes the relay, sends a message, requests
+generation, or repeats an uncertain effect. It can reconcile an existing effect
+when history uniquely confirms it. If history is still missing or ambiguous,
+sync remains incomplete and the existing cursor/link safeguards remain in place.
+Successful reconciliation leaves a paused relay paused; Resume is separate.
+When running, newly imported Hannah messages remain pending for normal automatic
+processing; already-due schedules and later polling are not disabled. Sync itself
+does not force an extra immediate polling cycle. The first sync of an uninitialized
+relay imports history as already processed, without replaying old conversations.
+
+The sync control requires a safe host restart and page reload after updating;
+no database migration or schedule re-save is needed. After a lost submission
+response, use **Retry same request** in Controls to retrieve the existing command.
+The separate local reload remains usable without spending history reads.
+
+Kindroid can return a real Hannah answer followed by an empty AI history record.
+Empty or whitespace-only records from the expected AI no longer count as competing
+answers during reconciliation. They remain stored as processed history records,
+not pending conversation turns. A blank alone cannot confirm generation; multiple
+non-empty replies, conflicting speakers and intervening user messages remain
+guarded. To recover a previously blocked case, safely restart, reload the dashboard,
+then use **Sync Kindroid history** while paused. Successful sync leaves the relay
+paused; use Resume separately when ready. No migration or regeneration is needed.
 
 Start conversation, Trigger check-in, and Resume enqueue durable commands. A
 queued response is not completion: the dashboard follows the command through its
@@ -149,6 +261,15 @@ after 30 days by default; delivery, approval, command, pause, and other
 safety-critical audit events are retained. Configure the routine retention window
 with `RELAY_ACTIVITY_RETENTION_DAYS`.
 
+Normal Codex replies now record a `reply_turn_decision` event: whether Hannah's
+next turn was requested or the exchange ended without one, linked to the sent
+message. A new reply containing `?`, `？` or `؟` cannot disable the response flag;
+the relay persists the corrected decision before delivery and logs the mismatch.
+This is a conservative punctuation guard, not complete semantic detection: quoted
+or rhetorical questions also request a turn. Instructions require response
+invitations without question marks to request a turn too. Bounded turns and
+uncertainty safeguards remain; existing sent messages are not revisited or replayed.
+
 Worker phases identify synchronous Kindroid calls, Codex runs, sends, approval
 execution, and cooldowns. Because those SDK/API calls are synchronous, the worker
 heartbeat cannot advance until a call returns; a stale heartbeat during a named
@@ -190,7 +311,70 @@ untouched; dashboard Pause is the safe way to halt new work. Avoid forcibly endi
 the process during external operations. Task registration is verified locally;
 actual launch at the next Windows sign-in is an operator acceptance check.
 
-## Idle Initiative
+## Schedule tab
+
+The **Schedule** tab divides one daily tick pool between **Check-ins** and
+**Exploration invitations**. Adjust either percentage or the balance slider; the
+other share follows so the total stays 100%. The 24-hour graph updates immediately
+and spreads whole ticks across the available hours. Select **15 mins**, **30 mins**
+or **60 mins** in the button row. Existing schedules default to 60 minutes until
+you save a different interval. At 60 minutes, a full day with 40/60 gives
+10/14 ticks. Dead time 22:00–06:00 leaves ticks at 06:00 through 21:00 and gives
+6 check-ins / 10 exploration invitations.
+
+Click an hour in the graph to toggle dead time, or add whole-hour start/end blocks
+below it. Multiple and overnight blocks are supported; overlapping blocks count
+once. Matching start/end blocks the full day. Remove a block, toggle its individual
+hours, or clear all dead time. Tab/Space operate graph buttons with the keyboard.
+This release has one recurring daily plan and whole-hour dead-time boundaries.
+Each hour on the graph shows one, two or four ticks for the selected interval.
+With 16 available hours, 15/30/60-minute intervals provide 64/32/16 ticks. At 40/60,
+those allocate 26/38, 13/19 and 6/10 check-ins/exploration invitations respectively.
+Changing intervals recalculates the preview; **Save schedule** applies the change
+to future ticks. Existing outcomes and rolling budget usage are preserved.
+
+**Save schedule** queues a local change, follows its outcome and persists it in
+SQLite. Until the first save, existing environment-based timing remains active.
+After saving, the shared schedule replaces both old timers and quiet-hour windows;
+unchecking **Enable scheduled activities** and saving stops both automatic starters.
+It also removes the extra conversation-inactivity cooldown for check-ins,
+exploration invitations and bounded experience follow-through. Recent completed
+messages alone do not suppress a tick, including newly synchronized Marc messages.
+Pending Hannah replies, running commands, unresolved exploration and uncertain
+delivery/generation still block new starts. Dead time and all API/history limits
+remain. This correction needs a safe host restart, not a schedule re-save or new
+migration; old skipped ticks are not caught up. See
+[ADR-019](docs/adr/ADR-019-shared-ticks-without-inactivity-cooldown.md).
+Changing a schedule applies to future ticks, never sends immediately, and never
+resumes a paused relay. Existing conversations can continue through dead time;
+manual controls remain available. The shared clock requires the combined `serve`
+host; headless `run` does not execute shared ticks.
+
+The tab also edits rolling limits for check-in attempts, all exploration invitations,
+scheduled exploration attempts and reserved interpretation calls. Existing defaults
+are loaded, not raised automatically: the old two-attempt exploration default can
+block most of a 14-tick allocation. Warnings identify insufficient limits and
+disabled capabilities. Automatic interpretation reserves two calls per invitation.
+Prior usage remains charged when limits change; scheduled and manual exploration
+share the invitation limit. The Info check-in limit controls the same override.
+`RELAY_EXPLORATION_ENABLED=true` and `RELAY_INITIATIVE_ENABLED=true` remain the
+respective capability prerequisites. Saving an enabled shared schedule replaces
+the old `RELAY_CURIOSITY_ENABLED` scheduling switch.
+
+Times use the relay computer's local timezone, even from a browser elsewhere.
+On daylight-saving transitions, nonexistent hours are skipped and repeated hours
+run once at the first occurrence. The graph represents the nominal 24-hour day;
+actual starts may be fewer. Pause, unfinished work, unresolved delivery and API
+limits still apply. A tick has a three-minute start window and is an opportunity,
+not an hour of work. Skipped or missed ticks do not accumulate for catch-up.
+Today's recorded outcomes appear in graph details; the recent list shows up to 192
+ticks (two full days at 15 minutes). Downtime is not expanded into one record per missed tick.
+
+Upgrade requires a safe host restart to apply migration 10, then a page reload.
+No live configuration is changed by updating the checkout. See
+[ADR-016](docs/adr/ADR-016-shared-daily-schedule.md) for scheduling and recovery rules.
+
+## Idle Initiative (legacy timing until a schedule is saved)
 
 At 00:00, 06:00, 12:00, and 18:00 local time, Codex posts a short,
 context-aware check-in that explicitly asks whether anything is on Hannah's
@@ -210,12 +394,18 @@ To test the same initiative path immediately:
 ```
 
 The manual trigger still respects pause state, quiet hours, pending messages,
-and the normal "latest speaker was Codex" guard.
+unresolved delivery, and recent conversation activity. Check-ins may follow Hannah,
+Marc, or Codex: the last speaker does not determine eligibility. A pending Hannah
+message is handled by the normal reply path instead of adding a check-in.
+`RELAY_INITIATIVE_IDLE_SECONDS` sets the minimum inactivity period (default 300
+seconds, minimum 60), for both scheduled and manually triggered check-ins when
+no shared daily schedule has been saved. With a saved schedule, this legacy
+inactivity setting is ignored (including for manual Trigger check-in).
+Recent or future-dated messages, and unknown message times, block initiation.
 
 Trigger check-in bypasses only the scheduled due time, even if synchronizing new
-history changes the next scheduled check. Known outbound Codex messages count as
-Codex for this guard even when Kindroid stored them under Marc's display name;
-a prefix in an otherwise unknown user message is not sufficient. The dashboard
+history changes the next scheduled check. Speaker metadata and outbound linkage
+still determine attribution, not permission to initiate. The dashboard
 shows the command's actual outcome beside the control and in recent commands:
 sent/answered, sent without Hannah taking the turn, or skipped with its reason.
 Initial bootstrap skips the check-in without replaying old history; trigger again
@@ -232,7 +422,8 @@ The saved dashboard limit overrides `RELAY_INITIATIVE_MAX_CHECKS_24H`. Without a
 saved override, an explicit environment value remains effective; otherwise the
 default is 50. If an existing installation still shows 5, save 50 in the panel.
 The environment file is not rewritten. Eligibility skips (quiet hours, pending
-messages, wrong latest speaker, empty room, missed schedule, pause, or bootstrap)
+messages, recent conversation, unresolved delivery, empty room, missed schedule,
+pause, or bootstrap; including historical last-speaker skips)
 do not consume attempts, including previously recorded skips. Attempts that start
 Codex work still count if they fail or delivery becomes uncertain. Lowering the
 limit retains prior usage. This allowance is separate from Kindroid history/API
@@ -336,8 +527,8 @@ or a missing Codex thread.
 For upgrades, create and check a backup first, pause and safely stop the old host,
 then update the checkout and reinstall with
 `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"`. Startup applies numbered
-migrations; current schema is 3. No new dependency or schema migration was needed
-for backup support. Keep the previous code revision together with its pre-upgrade
+migrations; current schema is 11 (including discovery sources and bounded experiences).
+Backup support itself required no schema change. Keep the previous code revision together with its pre-upgrade
 backup; downgrading code against a newer database is not a rollback procedure.
 
 Restore into a separate path and inspect it before switching the active database.

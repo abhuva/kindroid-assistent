@@ -23,14 +23,15 @@ def test_reusable_browser_api_client_behaviors() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_dashboard_dom_behaviors_and_accessibility() -> None:
+@pytest.mark.parametrize('pattern', ['skip', 'name'])
+def test_dashboard_dom_behaviors_and_accessibility(pattern: str) -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is not installed; run npm ci to enable UI verification")
     repository = Path(__file__).resolve().parents[1]
     result = subprocess.run(
-        [node, "--test", "--test-timeout=15000", "tests/ui_dashboard_test.cjs"],
+        [node, "--test", "--test-timeout=20000", f"--test-{pattern}-pattern=axe scans", "tests/ui_dashboard_test.cjs"],
         cwd=repository, capture_output=True, text=True, encoding="utf-8",
-        timeout=20, check=False,
+        timeout=25, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr

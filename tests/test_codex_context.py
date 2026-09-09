@@ -22,6 +22,9 @@ def test_seeded_codex_receives_fresh_bounded_untrusted_context(tmp_path, operati
         class Thread:
             id = "fixture-thread"
             def run(self, prompt, **kwargs):
+                if operation == "reply":
+                    assert 'invitations without a question mark' in prompt.split('\n\n', 1)[0]
+                    assert 'Check that your text and flag agree' in prompt.split('\n\n', 1)[0]
                 calls.append((json.loads(prompt.split("\n\n", 1)[1]), kwargs))
                 return SimpleNamespace(final_response=json.dumps({"reply": "Mock reply", "request_kindroid_reply": False,
                     "action": None, "success": True, "summary": "Mock result", "group_reply": ""}))

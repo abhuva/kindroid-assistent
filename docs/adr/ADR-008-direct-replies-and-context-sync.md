@@ -80,6 +80,30 @@ single-sync fallback because it works with the observed API behavior without an
 untested protocol switch or repeated generation. The history budget and spacing
 still apply. Fallback attempts and results are recorded without message bodies.
 
+### Empty AI history records (2026-09-08)
+
+An operator-approved diagnostic read found one real Hannah answer followed by an
+empty AI record in the same outbound window. Both passed the existing speaker
+check, so counting every record as a possible answer falsely reported ambiguity.
+Marc requested the targeted correction after diagnosis.
+
+We excluded empty/whitespace-only AI records from the matching window only when
+they passed the expected-speaker check. User boundaries, other roles, conflicting
+speakers and multiple non-empty replies remained guarded. A blank-only window did
+not establish successful generation. The complete paginated window still had to
+reconcile atomically before importing new messages or advancing its cursor.
+
+We retained blank records on successful import, with their original text/metadata
+and processed status, so they could not trigger Codex replies. We rejected dropping
+all blank records (loss of history evidence) or accepting arbitrary multiple AI
+replies (loss of unambiguous source linkage). This changes neither generation
+retry policy nor authority: existing uncertain turns can reconcile on the next
+budgeted sync, without regeneration or automatic resume. No migration is needed.
+
+This supersedes only the literal "sole AI message" rule above: the answer must be
+the sole non-empty reply after excluding matching blank AI records. General remote
+message editing/replacement remains outside this correction.
+
 ## Consequences
 
 - Replies containing text consume no additional history calls. Empty successful

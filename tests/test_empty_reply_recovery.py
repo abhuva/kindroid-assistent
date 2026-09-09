@@ -23,7 +23,8 @@ class EmptyBodyKindroid(FakeKindroid):
         return ""
 
 
-def test_empty_http_200_recovers_once_through_real_adapter(tmp_path):
+@pytest.mark.parametrize('blank_record', [False, True])
+def test_empty_http_200_recovers_once_through_real_adapter(tmp_path, blank_record):
     """Exercise the actual HTTP parser, including role-only history, with mocks."""
     config = replace(settings(tmp_path), initiative_enabled=False, kindroid_display_name="Kindroid")
     backend = EmptyBodyKindroid()
@@ -44,6 +45,9 @@ def test_empty_http_200_recovers_once_through_real_adapter(tmp_path):
         elif path == "groupchats-ai-response":
             assert payload["stream"] is False
             backend.generate_ai_response(payload["group_id"], payload["ai_id"])
+            if blank_record:
+                backend.messages.append(ChatMessage('blank-ai', 'ai', 'ai', 'Hannah',
+                    backend.messages[-1].timestamp + 1, ''))
         return httpx.Response(200, text="")
 
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://example.test/v1")
@@ -58,6 +62,9 @@ def test_empty_http_200_recovers_once_through_real_adapter(tmp_path):
         assert not state.is_paused()
         assert not state.turns.has_uncertain()
         assert state.pending_ai_messages() == []
+        if blank_record:
+            blank = state.connection.execute("SELECT body,processed FROM messages WHERE remote_id='blank-ai'").fetchone()
+            assert blank['body'] == '' and blank['processed'] == 1
         recovered = next(e for e in state.activity.after()
                          if e.kind == "generation_history_fallback" and e.details["outcome"] == "recovered")
         assert state.outbox_for_source(recovered.details["message_id"])["status"] == "sent"

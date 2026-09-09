@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3,<9"]
+memory = ["sentence-transformers==6.0.0"]
 
 [project.scripts]
 kindroid-relay = "kindroid_relay.cli:main"

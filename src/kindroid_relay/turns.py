@@ -195,6 +195,11 @@ class TurnStore:
                 for remote in history[positions[0] + 1:]:
                     if remote.sender_type == "user":
                         break
+                    # Kindroid may append an empty AI record after the real answer.
+                    # It is not a competing reply or evidence generation succeeded.
+                    # Keep other speakers/roles and user boundaries conservative.
+                    if remote.sender_type == "ai" and not remote.message.strip() and self._same_ai(remote, turn):
+                        continue
                     following.append(remote)
                 local = self.connection.execute("SELECT * FROM messages WHERE remote_id = ?", (turn["id"],)).fetchone()
                 candidates = [m for m in following if m.id not in known and self._same_ai(m, turn)

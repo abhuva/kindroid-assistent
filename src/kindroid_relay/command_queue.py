@@ -13,12 +13,29 @@ from .config import DASHBOARD_INITIATIVE_LIMIT_MAX
 
 
 class CommandType(str, Enum):
+    SET_DISCOVERY = 'set_discovery'
+    APPROVE_PUBLIC_TOPIC = 'approve_public_topic'
     START_CONVERSATION = "start_conversation"
     TRIGGER_INITIATIVE = "trigger_initiative"
+    SYNC_HISTORY = "sync_history"
     RESUME = "resume"
     EXECUTE_APPROVAL = "execute_approval"
     REJECT_APPROVAL = "reject_approval"
     SET_INITIATIVE_LIMIT = "set_initiative_limit"
+    MEMORY_SAVE = "memory_save"
+    MEMORY_REVISE = "memory_revise"
+    MEMORY_LINK = "memory_link"
+    MEMORY_EVIDENCE = "memory_evidence"
+    MEMORY_EXTRACT = "memory_extract"
+    MEMORY_REINDEX = "memory_reindex"
+    START_EXPLORATION = "start_exploration"
+    REVIEW_CANDIDATE = "review_candidate"
+    CLOSE_EXPLORATION = "close_exploration"
+    INTERPRET_EXPLORATION = "interpret_exploration"
+    GARDEN_CORRECT = "garden_correct"
+    SCHEDULED_EXPLORATION = "scheduled_exploration"
+    SCHEDULED_CHECK_IN = "scheduled_check_in"
+    SET_SCHEDULE = "set_schedule"
 
 
 class CommandStatus(str, Enum):
@@ -57,6 +74,10 @@ LEGAL_TRANSITIONS: dict[CommandStatus, frozenset[CommandStatus]] = {
 
 SIDE_EFFECTING_COMMANDS = frozenset(
     {
+        CommandType.SCHEDULED_CHECK_IN,
+        CommandType.SCHEDULED_EXPLORATION,
+        CommandType.INTERPRET_EXPLORATION,
+        CommandType.START_EXPLORATION,
         CommandType.START_CONVERSATION,
         CommandType.TRIGGER_INITIATIVE,
         CommandType.EXECUTE_APPROVAL,
@@ -65,6 +86,12 @@ SIDE_EFFECTING_COMMANDS = frozenset(
 
 SINGLE_ACTIVE_COMMANDS = frozenset(
     {
+        CommandType.SYNC_HISTORY,
+        CommandType.SCHEDULED_CHECK_IN,
+        CommandType.SET_SCHEDULE,
+        CommandType.SCHEDULED_EXPLORATION,
+        CommandType.INTERPRET_EXPLORATION,
+        CommandType.START_EXPLORATION,
         CommandType.START_CONVERSATION,
         CommandType.TRIGGER_INITIATIVE,
         CommandType.RESUME,
@@ -99,12 +126,68 @@ def validate_payload(
     payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
     value = dict(payload or {})
+    if command_type == CommandType.SET_DISCOVERY:
+        from .discovery import validate_discovery
+        try:
+            return validate_discovery(value)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise CommandValidationError(str(exc)) from exc
+    if command_type == CommandType.APPROVE_PUBLIC_TOPIC:
+        if (set(value) != {'session_id', 'topic'} or not isinstance(value['session_id'], str)
+                or not 1 <= len(value['session_id']) <= 128 or not isinstance(value['topic'], str)
+                or not 1 <= len(value['topic'].strip()) <= 180 or any(ord(c) < 32 for c in value['topic'])):
+            raise CommandValidationError('Public topic approval requires a session and a short public search phrase')
+        return {**value, 'topic': value['topic'].strip()}
+    if command_type == CommandType.SET_SCHEDULE:
+        from .schedule import validate_schedule
+        try:
+            validated = validate_schedule(value)
+            if 'tick_minutes' not in value:
+                # Preserve serialization for same-key retries from pre-selector clients.
+                validated.pop('tick_minutes')
+            return validated
+        except (ValueError, TypeError, KeyError) as exc:
+            raise CommandValidationError(str(exc)) from exc
+    if command_type == CommandType.GARDEN_CORRECT:
+        from .garden import validate_correction
+        try:
+            return validate_correction(value)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise CommandValidationError('Invalid garden correction payload') from exc
+    if command_type == CommandType.INTERPRET_EXPLORATION:
+        if (set(value) != {'session_id'} or not isinstance(value['session_id'], str)
+                or not 1 <= len(value['session_id']) <= 128):
+            raise CommandValidationError('Interpretation requires a session ID')
+        return value
+    if command_type == CommandType.CLOSE_EXPLORATION:
+        if (set(value) != {'session_id', 'reason'}
+                or not isinstance(value['session_id'], str) or not 1 <= len(value['session_id']) <= 128
+                or not isinstance(value['reason'], str) or not 1 <= len(value['reason'].strip()) <= 500):
+            raise CommandValidationError('Closing an exploration requires its ID and an inspection reason')
+        return value
+    if command_type == CommandType.REVIEW_CANDIDATE:
+        if (set(value) != {'candidate_id', 'status', 'reason'}
+                or not isinstance(value['candidate_id'], str) or not 1 <= len(value['candidate_id']) <= 128
+                or value['status'] not in ('active', 'archived')
+                or not isinstance(value['reason'], str) or not 1 <= len(value['reason'].strip()) <= 500):
+            raise CommandValidationError('Candidate review requires an ID, active/archived status and reason')
+        return value
+    if command_type.value.startswith("memory_"):
+        from .memory import validate_memory_payload
+        try:
+            return validate_memory_payload(command_type.value.removeprefix("memory_"), value)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise CommandValidationError("Invalid memory command payload") from exc
     if command_type == CommandType.SET_INITIATIVE_LIMIT:
         limit = value.get("limit")
         if set(value) != {"limit"} or type(limit) is not int or not 1 <= limit <= DASHBOARD_INITIATIVE_LIMIT_MAX:
             raise CommandValidationError(f"initiative limit must be an integer from 1 to {DASHBOARD_INITIATIVE_LIMIT_MAX}")
         return {"limit": limit}
     if command_type in {
+        CommandType.SYNC_HISTORY,
+        CommandType.SCHEDULED_CHECK_IN,
+        CommandType.SCHEDULED_EXPLORATION,
+        CommandType.START_EXPLORATION,
         CommandType.START_CONVERSATION,
         CommandType.TRIGGER_INITIATIVE,
         CommandType.RESUME,

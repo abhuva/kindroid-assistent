@@ -71,6 +71,33 @@ self-model applies only to that separate future scope, not to agent context memo
 
 ## Consequences
 
+### Development sequencing amendment — 2026-09-06
+
+Marc subsequently requested a checkpoint commit followed by implementation of the
+next milestone. We allowed local, fixture-tested M6A development before REL-001's
+remaining manual acceptance. Alternatives were blocking all implementation until
+live acceptance, or incorrectly treating mock tests as release acceptance. This
+exception permits neither release sign-off nor live extraction. Automatic capture
+and context injection default off; no existing chat is indexed merely by upgrading.
+REL-001 and MEM-010's operator acceptance remain outstanding. The cost is carrying
+an unreleased feature alongside the remaining dashboard acceptance work.
+
+For the first local implementation we chose deterministic exact-passage candidate
+selection rather than an additional model-based extraction turn. This bounds cost,
+avoids another private-data processing boundary, and leaves original attribution
+inspectable, but misses implicit/non-English observations and richer relationships.
+The alternative of model-based extraction remains a possible evaluated upgrade,
+not an assumed capability of this implementation. Entity identity resolution stays
+explicitly reviewed. We selected optional local SentenceTransformer embeddings
+with versioned caches and lexical fallback; no embedding model was installed or
+validated on private conversation data. See [implementation and limits](../agent-memory.md).
+
+Marc then requested semantic extraction so memory formation would not require
+manual selection. [ADR-010](ADR-010-semantic-memory-extraction.md) superseded the
+cue-only default with isolated, validated Codex extraction. The local cue backend
+remains optional; the identity/authority and live-enablement boundaries above
+remain unchanged.
+
 - (+) Codex can retrieve older context and explain its sources without taking
   ownership of Hannah's memory or self-description.
 - (+) The same foundation supports exploration, avoiding repeated offers, and

@@ -30,14 +30,26 @@ def test_dashboard_settings_have_safe_defaults(tmp_path: Path) -> None:
     assert settings.history_429_cooldown_seconds == 3600
     assert settings.activity_retention_days == 30
     assert settings.initiative_max_checks_24h == 50
+    assert settings.initiative_idle_seconds == 300
     assert settings.worker_stale_seconds > settings.worker_heartbeat_seconds
     assert settings.log_max_bytes == 5_242_880
     assert settings.log_backup_count == 5
+    assert settings.memory_enabled is False
+    assert settings.exploration_enabled is False
+    assert settings.exploration_max_sessions_24h == 3
+    assert settings.memory_auto_capture is False
+    assert settings.memory_max_messages_24h == 30
+    assert settings.memory_model_path == ""
+    assert settings.memory_extractor == "semantic"
+    assert settings.memory_extraction_timeout_seconds == 45
 
 
 @pytest.mark.parametrize(
     ("line", "message"),
     [
+        ('RELAY_INITIATIVE_IDLE_SECONDS="59"\n', "at least 60"),
+        ('RELAY_MEMORY_EXTRACTOR="unknown"\n', "semantic or local"),
+        ('RELAY_MEMORY_EXTRACTION_TIMEOUT_SECONDS="121"\n', "at most 120"),
         ('RELAY_WEB_HOST="0.0.0.0"\n', "loopback"),
         ('RELAY_WEB_HOST="localhost"\n', "numeric loopback"),
         ('RELAY_WEB_HOST="::1"\n', "IPv4"),

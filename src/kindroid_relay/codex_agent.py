@@ -20,7 +20,10 @@ REPLY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "reply": {"type": "string"},
-        "request_kindroid_reply": {"type": "boolean"},
+        "request_kindroid_reply": {
+            "type": "boolean",
+            "description": "True whenever the reply asks Hannah a question or invites a response, choice or reflection. False only for a closing statement requiring no answer. Hannah cannot respond unless the relay requests her turn.",
+        },
         "action": {
             "anyOf": [
                 {"type": "null"},
@@ -72,12 +75,17 @@ class CodexAgent:
         prompt_path: Path,
         model: str | None,
         approved_sandbox: str,
+        memory_settings: Any = None,
     ) -> None:
         self.state = state
         self.cwd = cwd
         self.prompt = prompt_path.read_text(encoding="utf-8")
         self.model = model
         self.approved_sandbox = approved_sandbox
+        self.memory = None
+        if memory_settings is not None:
+            from .memory_service import MemoryService
+            self.memory = MemoryService(state, memory_settings)
         self._codex: Codex | None = None
         self._thread: Any = None
 
@@ -130,9 +138,13 @@ class CodexAgent:
             "timestamp": message.timestamp,
             "text": message.message,
         }
-        envelope.update(self._context(exclude_id=message.id))
+        envelope.update(self._context(exclude_id=message.id, query=message.message))
         result = self._thread.run(
-            "Respond to this new group-chat event:\n\n"
+            "Respond to this new group-chat event. Set request_kindroid_reply=true "
+            "if your reply asks a question or invites any response, choice or reflection, "
+            "including invitations without a question mark. Hannah cannot reply unless "
+            "the relay requests her turn. Use false only for an actual closing statement "
+            "with nothing left for her to answer. Check that your text and flag agree.\n\n"
             + json.dumps(envelope, ensure_ascii=False),
             output_schema=REPLY_SCHEMA,
             sandbox=Sandbox.read_only,
@@ -163,8 +175,9 @@ class CodexAgent:
     def manual_conversation_opener(self, latest: ChatMessage) -> str:
         return self._conversation_opener(latest, event="manual_conversation_start")
 
-    def _context(self, *, exclude_id: str | None = None) -> dict[str, Any]:
+    def _context(self, *, exclude_id: str | None = None, query: str = "") -> dict[str, Any]:
         return {
+            "agent_memory": self.memory.context(query) if self.memory else {"status": "disabled", "items": []},
             "history_synced_at": self.state.get_int("context_synced_at", 0),
             "context_scope": (
                 "Recent 50 locally recorded messages, including direct replies since the last history sync. "
@@ -192,7 +205,7 @@ class CodexAgent:
                 "text": latest.message,
             },
         }
-        envelope.update(self._context(exclude_id=latest.id))
+        envelope.update(self._context(exclude_id=latest.id, query=latest.message))
         result = self._thread.run(
             "Write a concise, natural message to Hannah that opens a conversation. "
             "Clearly give her the opportunity to speak: ask whether anything is on "
@@ -232,7 +245,7 @@ class CodexAgent:
             "risk": risk,
             "constraint": "Perform only the approved action. Stop if its scope is ambiguous or has changed.",
         }
-        payload.update(self._context())
+        payload.update(self._context(query=summary + " " + instruction))
         result = self._thread.run(
             "Marc approved this exact action locally:\n\n"
             + json.dumps(payload, ensure_ascii=False),

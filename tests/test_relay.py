@@ -317,7 +317,8 @@ def test_relay_uses_prefix_fallback_for_wrong_stored_persona(tmp_path: Path) -> 
         assert state.activity.after()[-1].kind == "identity_fallback"
 
 
-def test_successful_delivery_is_not_repeated_after_interruption(tmp_path: Path) -> None:
+@pytest.mark.parametrize('text', ['Already delivered', 'An old unanswered question?'])
+def test_successful_delivery_is_not_repeated_after_interruption(tmp_path: Path, text) -> None:
     config = settings(tmp_path)
     kindroid = FakeKindroid()
 
@@ -333,7 +334,7 @@ def test_successful_delivery_is_not_repeated_after_interruption(tmp_path: Path) 
             lambda: nullcontext(AgentThatMustNotRun()),
         )
         relay.bootstrap(respond_to_latest=True)
-        body = relay._outbound_body("Already delivered")
+        body = relay._outbound_body(text)
         item = state.create_outbox(
             body,
             source_message_id="h1",
@@ -343,7 +344,71 @@ def test_successful_delivery_is_not_repeated_after_interruption(tmp_path: Path) 
 
         assert relay.run_once() == 1
         assert kindroid.sent == []
+        assert kindroid.turn_requests == []  # Never retroactively correct old decisions.
         assert state.pending_ai_messages() == []
+
+
+@pytest.mark.parametrize('question', ['How does the idea feel?', 'How does it feel\uff1f', 'How does it feel\u061f'])
+def test_question_cannot_silently_end_exchange(tmp_path, question):
+    config = settings(tmp_path)
+    remote = FakeKindroid()
+    class Agent:
+        calls = 0
+        def reply_to(self, message):
+            self.calls += 1
+            return AgentReply(question if self.calls == 1 else 'Thanks. Talk later.', False)
+    agent = Agent()
+    with RelayState(config.state_path) as state:
+        relay = Relay(config, state, remote, lambda: nullcontext(agent))
+        relay.bootstrap(respond_to_latest=True)
+        relay.run_once()
+        assert remote.turn_requests == [False]
+        assert len(remote.sent) == 2 and agent.calls == 2
+        assert state.outbox_for_source('h1')['request_kindroid_reply'] == 1
+        events = [e for e in state.activity.after() if e.kind == 'reply_turn_decision']
+        assert [e.details['outcome'] for e in events] == ['reply_requested', 'no_reply_requested']
+        assert events[0].details['reason'] == 'question_requires_reply'
+        assert events[0].correlation_id == state.outbox_for_source('h1')['id']
+        assert events[1].summary == 'Exchange ended: Codex requested no Hannah reply'
+        assert all(question not in e.summary and question not in str(e.details) for e in events)
+        assert not state.is_paused()
+
+
+def test_question_correction_keeps_turn_limit(tmp_path):
+    config = replace(settings(tmp_path), max_consecutive_turns=2)
+    remote = FakeKindroid()
+    class Agent:
+        def reply_to(self, message):
+            return AgentReply('What do you think?', False)
+    with RelayState(config.state_path) as state:
+        relay = Relay(config, state, remote, lambda: nullcontext(Agent()))
+        relay.bootstrap(respond_to_latest=True)
+        relay.run_once()
+        assert state.is_paused()
+        assert len(remote.sent) == 2 and remote.turn_requests == [False, False]
+        relay.run_once()
+        assert len(remote.sent) == 2  # Correction cannot bypass pause or the chain bound.
+
+
+def test_question_correction_is_durable_even_when_delivery_is_uncertain(tmp_path):
+    config = settings(tmp_path)
+    remote = FakeKindroid()
+    class Agent:
+        def reply_to(self, message):
+            return AgentReply('What do you think?', False)
+    def failing_send(*args):
+        raise KindroidAPIError('post_user_message', 500, 'fixture failure')
+    remote.post_user_message = failing_send
+    with RelayState(config.state_path) as state:
+        relay = Relay(config, state, remote, lambda: nullcontext(Agent()))
+        relay.bootstrap(respond_to_latest=True)
+        with pytest.raises(KindroidAPIError):
+            relay.run_once()
+        stored = state.outbox_for_source('h1')
+        assert stored['request_kindroid_reply'] == 1 and stored['status'] == 'uncertain'
+        assert remote.turn_requests == [] and state.is_paused()
+        relay.run_once()
+        assert remote.turn_requests == []
 
 
 def test_relay_restores_persona_when_delivery_fails(tmp_path: Path) -> None:

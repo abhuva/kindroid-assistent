@@ -28,6 +28,33 @@ const byId = (id) => document.getElementById(id);
 const localTime = (value) => value ? new Date(value).toLocaleString() : "—";
 const announce = (value) => { byId("announcer").textContent = value; };
 
+const viewTabs = [...document.querySelectorAll('.tabbar [role="tab"]')];
+function selectView(id, focus = false) {
+  for (const tab of viewTabs) {
+    const selected = tab.id === id;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    byId(tab.getAttribute("aria-controls")).hidden = !selected;
+    if (selected && focus) tab.focus();
+  }
+}
+for (const [index, tab] of viewTabs.entries()) {
+  tab.addEventListener("click", () => selectView(tab.id));
+  tab.addEventListener("keydown", event => {
+    const next = { ArrowRight: (index + 1) % viewTabs.length,
+      ArrowLeft: (index + viewTabs.length - 1) % viewTabs.length,
+      Home: 0, End: viewTabs.length - 1 }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    selectView(viewTabs[next].id, true);
+  });
+}
+document.querySelector(".skip-link").addEventListener("click", event => {
+  event.preventDefault();
+  selectView("tab-info");
+  byId("controls-heading").focus();
+});
+
 function reportError(error) {
   if (error.name === "AbortError") return;
   byId("action-error").textContent = error.message || "Request failed.";
@@ -50,7 +77,12 @@ function relatedLink(kind, id) {
   return link;
 }
 
+document.addEventListener("memory-source", event => {
+  openRelated("message", event.detail.id, event.detail.opener).catch(reportError);
+});
+
 function filterRelated(id) {
+  selectView("tab-info");
   byId("activity-related").value = id;
   byId("activity-severity").value = "";
   byId("activity-kind").value = "";
@@ -64,6 +96,7 @@ function activityLink(id) {
   link.addEventListener("click", (event) => {
     event.preventDefault();
     if (byId("detail-dialog").open) byId("detail-dialog").close();
+    if (byId("garden-dialog").open) byId("garden-dialog").close();
     filterRelated(id);
   });
   return link;
@@ -101,6 +134,7 @@ function updateControls() {
   byId("confirm-action").disabled = pending || unavailable;
   byId("retry-action").disabled = submitting;
   byId("save-initiative-limit").disabled = pending || unavailable;
+  byId("sync-history").disabled = pending || unavailable;
 }
 
 function renderCurrentActivity() {
@@ -154,6 +188,7 @@ const commandStatusTargets = {
   start_conversation: "start-conversation-status",
   trigger_initiative: "trigger-initiative-status",
   resume: "resume-status",
+  sync_history: "history-sync-status",
 };
 
 function renderCommand(command, { announceTerminal = false } = {}) {
@@ -162,6 +197,7 @@ function renderCommand(command, { announceTerminal = false } = {}) {
   if (previous && JSON.stringify(previous) === JSON.stringify(command)) return;
   if (previous && RelayUiModel.commandStatusView(previous).terminal && !RelayUiModel.commandStatusView(command).terminal) return;
   commands.set(command.id, command);
+  document.dispatchEvent(new CustomEvent("relay-command", { detail: command }));
   trackedCommand = command;
   const view = RelayUiModel.commandStatusView(command);
   const globalStatus = byId("command-status");
@@ -172,6 +208,12 @@ function renderCommand(command, { announceTerminal = false } = {}) {
     const target = byId(targetId);
     target.textContent = view.detail || command.status;
     target.className = `control-status ${view.tone}`;
+  }
+  if (command.command_type === "sync_history" && view.terminal
+      && (!previous || !RelayUiModel.commandStatusView(previous).terminal)) {
+    refreshMessages().catch(error => {
+      if (error.name !== "AbortError") announce(`History sync finished, but loading saved messages failed: ${error.message}`);
+    });
   }
   if (
     announceTerminal
@@ -206,6 +248,7 @@ async function refreshTrackedCommand() {
 
 function renderSnapshot(data) {
   latestSnapshot = data;
+  document.dispatchEvent(new CustomEvent("relay-snapshot", { detail: data }));
   const paused = Boolean(data.relay.paused);
   const worker = data.worker;
   const statusView = RelayUiModel.relayStatusView(data);
@@ -367,6 +410,12 @@ async function refreshMessages(older = false) {
       body.textContent = message.body;
       header.append(name, time);
       article.append(header, body);
+      const saveObservation = document.createElement("button");
+      saveObservation.type = "button";
+      saveObservation.className = "text-button";
+      saveObservation.textContent = "Save observation";
+      saveObservation.addEventListener("click", () => document.dispatchEvent(new CustomEvent("memory-save", { detail: message })));
+      article.append(saveObservation);
       article.append(element("small", `Sender: ${message.sender} · Type: ${message.sender_type}`), relatedLink("message", message.id));
       if (message.history_confirmed === false) {
         article.append(element("small", "Received locally; awaiting history confirmation of name and time."));
@@ -590,6 +639,10 @@ byId("refresh-messages").addEventListener("click", () => {
     if (error.name !== "AbortError") announce(`Message refresh failed: ${error.message}`);
   });
 });
+byId("sync-history").addEventListener("click", async () => {
+  const result = await submit("/api/v1/commands/sync-history");
+  if (!result) byId("history-sync-status").textContent = byId("action-error").textContent;
+});
 byId("refresh-log").addEventListener("click", async () => {
   try {
     const data = await replaceRead(
@@ -611,13 +664,14 @@ byId("confirm-action").addEventListener("click", performConfirmation);
 
 for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("close", () => {
-    if (dialog.returnFocus?.isConnected && !dialog.returnFocus.disabled) dialog.returnFocus.focus();
+    if (dialog.returnFocus?.isConnected && !dialog.returnFocus.disabled && !dialog.returnFocus.closest("[hidden]")) dialog.returnFocus.focus();
     else if (byId("approval-dialog").open) byId("approval-dialog").querySelector("[autofocus]").focus();
-    else byId("controls-heading").focus();
+    else document.querySelector('.tabbar [aria-selected="true"]').focus();
   });
   dialog.addEventListener("keydown", (event) => {
     if (event.key !== "Tab") return;
-    const controls = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), a[href], [tabindex="0"]')];
+    const controls = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]')]
+      .filter(control => !control.closest('[hidden]') && ![...dialog.querySelectorAll('details:not([open])')].some(details => details.contains(control)));
     const first = controls[0];
     const last = controls[controls.length - 1];
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
@@ -634,5 +688,9 @@ document.addEventListener("visibilitychange", () => {
   refreshAll().finally(schedulePoll);
 });
 
+document.addEventListener("schedule-submitted", event => {
+  renderCommand(event.detail);
+  refreshAll();
+});
 updateControls();
 Promise.allSettled([refreshAll(), refreshMessages()]).finally(schedulePoll);

@@ -60,6 +60,13 @@ COMMON_DETAIL_FIELDS = frozenset(
 
 ACTIVITY_KINDS = frozenset(
     {
+        'discovery_changed', 'discovery_source', 'experience_updated',
+        "schedule_changed",
+        "schedule_queued",
+        "schedule_skipped",
+        "curiosity_scheduled",
+        "curiosity_skipped",
+        "curiosity_completed",
         "process_started",
         "process_stopped",
         "worker_phase",
@@ -69,8 +76,10 @@ ACTIVITY_KINDS = frozenset(
         "relay_cycle_completed",
         "relay_cycle_failed",
         "history_rate_limited",
+        "history_sync",
         "message_received",
         "message_processed",
+        "reply_turn_decision",
         "codex_started",
         "codex_completed",
         "codex_failed",
@@ -102,6 +111,8 @@ ACTIVITY_KINDS = frozenset(
 
 SAFETY_CRITICAL_ACTIVITY_KINDS = frozenset(
     {
+        'discovery_changed', 'experience_updated',
+        "schedule_changed",
         "relay_paused",
         "initiative_limit_changed",
         "relay_resumed",

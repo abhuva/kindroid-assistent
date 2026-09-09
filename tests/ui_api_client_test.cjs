@@ -136,7 +136,7 @@ function testCommandStatusStates() {
   assert.equal(commandStatusView(command("interrupted")).terminal, true);
   const checkIn = { command_type: "trigger_initiative", status: "completed" };
   assert.match(commandStatusView(checkIn).text, /outcome unavailable/);
-  for (const outcome of ["paused", "disabled", "daily_budget", "pending_message", "empty_room", "latest_not_codex", "quiet_hours", "bootstrapped"]) {
+  for (const outcome of ["paused", "disabled", "daily_budget", "pending_message", "empty_room", "latest_not_codex", "recent_conversation", "delivery_unresolved", "quiet_hours", "bootstrapped"]) {
     const view = commandStatusView({ ...checkIn, result: { initiative_outcome: outcome, check_in_sent: false } });
     assert.match(view.detail, /Skipped:/);
     assert.equal(view.tone, "warning");

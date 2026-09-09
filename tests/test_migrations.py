@@ -134,7 +134,7 @@ def test_version_two_upgrade_preserves_messages_and_source_links(tmp_path: Path)
         connection.execute("INSERT INTO outbox VALUES ('delivery', 'Kept reply', 'hash', 'remote-1', 0, 'sent', NULL, 123, 123)")
         connection.execute("INSERT INTO approvals VALUES ('approval', 'remote-1', 'summary', 'instruction', 'low', 'pending', NULL, 123, 123)")
     connection.close()
-    assert migrate_database(path) == [3]
+    assert migrate_database(path) == list(range(3, LATEST_SCHEMA_VERSION + 1))
     with RelayState(path) as state:
         message = state.connection.execute("SELECT * FROM messages").fetchone()
         assert message["remote_id"] == message["kindroid_id"] == "remote-1"

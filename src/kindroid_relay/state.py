@@ -21,12 +21,17 @@ from .turns import TurnStore
 NON_SPENDING_INITIATIVE_OUTCOMES = (
     "missed", "pending_message", "empty_room", "latest_not_codex", "quiet_hours",
     "paused", "disabled", "bootstrapped", "daily_budget",
+    "recent_conversation", "delivery_unresolved",
 )
 _SPENDING_INITIATIVE_SQL = "outcome NOT IN (" + ",".join("?" for _ in NON_SPENDING_INITIATIVE_OUTCOMES) + ")"
 
 
 class RelayAlreadyRunning(RuntimeError):
     pass
+
+
+class HistoryBudgetError(RuntimeError):
+    """The rolling local history-read allowance has been exhausted."""
 
 
 def _windows_pid_is_active(pid: int) -> bool:
@@ -380,7 +385,7 @@ class RelayState:
                 "SELECT COUNT(*) FROM history_requests"
             ).fetchone()[0]
             if count >= maximum:
-                raise RuntimeError(
+                raise HistoryBudgetError(
                     f"local history request budget exhausted ({count}/{maximum} in 24h)"
                 )
             self.connection.execute(

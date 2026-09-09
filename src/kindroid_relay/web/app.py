@@ -37,6 +37,7 @@ from .schemas import (
     DeliveryResponse,
     DeliveryPageResponse,
     CommandSubmission,
+    MemorySubmission,
     InitiativeLimitRequest,
     ErrorResponse,
     HealthResponse,
@@ -246,6 +247,11 @@ def create_web_app(
         with state_factory.connect() as state:
             relay_status = state.status()
             initiative_budget = state.initiative_budget(settings.initiative_max_checks_24h)
+            from ..schedule import DailyScheduler
+            daily = DailyScheduler(state, settings)
+            shared_schedule = daily.snapshot()
+            if shared_schedule['configured']:
+                relay_status['initiative_due_at'] = shared_schedule['next_due_at']
             worker = state.worker_status.get()
             active = (
                 state.commands.get(worker.active_command_id)
@@ -268,6 +274,7 @@ def create_web_app(
             worker=worker_response,
             active_command=_command_response(active) if active else None,
             schedule={
+                "daily": shared_schedule,
                 "initiative_enabled": settings.initiative_enabled,
                 "initiative_budget": initiative_budget,
                 "initiative_schedule_hours": settings.initiative_schedule_hours,
@@ -476,6 +483,103 @@ def create_web_app(
         wake_event.set()
         return _command_response(command, created=created)
 
+    @app.get("/api/v1/memory")
+    def memory_search(q: str = Query(default="", max_length=500)) -> dict[str, Any]:
+        from ..memory_service import MemoryService
+        with state_factory.connect() as state:
+            memory = MemoryService(state, settings)
+            return {**memory.store.search(q), "progress": memory.status()}
+
+    @app.get("/api/v1/garden")
+    def garden_items(layer: str = Query(default='', pattern='^(roots|growing|passing)?$'),
+                     status: str = Query(default='', pattern='^(active|paused|archived|superseded)?$'),
+                     after: str = Query(default='', max_length=128), limit: int = Query(default=30, ge=1, le=100)) -> dict[str, Any]:
+        from ..garden import GardenStore, public_garden
+        with state_factory.connect() as state:
+            return public_garden(GardenStore(state.connection, settings.group_id).list_items(layer, status, after, limit))
+
+    @app.get("/api/v1/garden/{item_id}")
+    def garden_detail(item_id: str, after: int = Query(default=0, ge=0), limit: int = Query(default=30, ge=1, le=100)) -> dict[str, Any]:
+        from ..garden import GardenStore, public_garden
+        with state_factory.connect() as state:
+            try:
+                return public_garden(GardenStore(state.connection, settings.group_id).detail(item_id, after, limit))
+            except ValueError:
+                raise HTTPException(status_code=404, detail='Garden item not found') from None
+
+    @app.get("/api/v1/garden/{item_id}/trail")
+    def garden_trail(item_id: str, after: int = Query(default=0, ge=0), limit: int = Query(default=30, ge=1, le=100)) -> dict[str, Any]:
+        from ..garden import GardenStore, public_garden
+        with state_factory.connect() as state:
+            try:
+                return public_garden(GardenStore(state.connection, settings.group_id).trail(item_id, after, limit))
+            except ValueError:
+                raise HTTPException(status_code=404, detail='Garden item not found') from None
+
+    @app.post("/api/v1/garden/corrections", response_model=CommandResponse, status_code=202)
+    def garden_correct(body: MemorySubmission) -> CommandResponse:
+        return enqueue(CommandType.GARDEN_CORRECT, body, body.payload)
+
+    @app.get("/api/v1/exploration")
+    def exploration_status() -> dict[str, Any]:
+        from ..agency import AgencyStore
+        from ..curiosity import CuriosityScheduler
+        with state_factory.connect() as state:
+            from ..schedule import effective_settings
+            effective = effective_settings(state, settings)
+            return {**AgencyStore(state, settings.group_id).snapshot(effective.exploration_max_sessions_24h),
+                    'curiosity': CuriosityScheduler(state, settings).snapshot(),
+                    'enabled': settings.exploration_enabled, 'paused': state.is_paused()}
+
+    @app.get('/api/v1/discovery')
+    def discovery_status() -> dict[str, Any]:
+        from ..discovery import DiscoveryStore
+        with state_factory.connect() as state:
+            return DiscoveryStore(state, settings.group_id).snapshot()
+
+    @app.post('/api/v1/settings/discovery', response_model=CommandResponse, status_code=202)
+    def set_discovery(body: MemorySubmission) -> CommandResponse:
+        return enqueue(CommandType.SET_DISCOVERY, body, body.payload)
+
+    @app.post('/api/v1/discovery/public-topic', response_model=CommandResponse, status_code=202)
+    def approve_public_topic(body: MemorySubmission) -> CommandResponse:
+        return enqueue(CommandType.APPROVE_PUBLIC_TOPIC, body, body.payload)
+
+    @app.post("/api/v1/commands/start-exploration", response_model=CommandResponse, status_code=202)
+    def start_exploration(body: CommandSubmission) -> CommandResponse:
+        if not settings.exploration_enabled:
+            raise HTTPException(status_code=409, detail="Exploration disabled pending operator acceptance")
+        return enqueue(CommandType.START_EXPLORATION, body)
+
+    @app.post("/api/v1/exploration/candidates/review", response_model=CommandResponse, status_code=202)
+    def review_candidate(body: MemorySubmission) -> CommandResponse:
+        return enqueue(CommandType.REVIEW_CANDIDATE, body, body.payload)
+
+    @app.post("/api/v1/exploration/close", response_model=CommandResponse, status_code=202)
+    def close_exploration(body: MemorySubmission) -> CommandResponse:
+        return enqueue(CommandType.CLOSE_EXPLORATION, body, body.payload)
+
+    @app.post("/api/v1/exploration/interpret", response_model=CommandResponse, status_code=202)
+    def interpret_exploration(body: MemorySubmission) -> CommandResponse:
+        if not settings.exploration_enabled:
+            raise HTTPException(status_code=409, detail="Exploration disabled")
+        return enqueue(CommandType.INTERPRET_EXPLORATION, body, body.payload)
+
+    @app.get("/api/v1/memory/{statement_id}")
+    def memory_detail(statement_id: str) -> dict[str, Any]:
+        from ..memory import MemoryStore
+        with state_factory.connect() as state:
+            item = MemoryStore(state.connection, settings.group_id).detail(statement_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="observation not found")
+        return item
+
+    @app.post("/api/v1/memory/commands/{operation}", response_model=CommandResponse, status_code=202)
+    def memory_command(operation: str, body: MemorySubmission) -> CommandResponse:
+        if operation not in {"save", "revise", "link", "evidence", "extract", "reindex"}:
+            raise HTTPException(status_code=404, detail="unknown memory operation")
+        return enqueue(CommandType("memory_" + operation), body, body.payload)
+
     @app.post(
         "/api/v1/commands/start-conversation",
         response_model=CommandResponse,
@@ -487,6 +591,16 @@ def create_web_app(
     @app.post("/api/v1/settings/initiative-limit", response_model=CommandResponse, status_code=202)
     def set_initiative_limit(body: InitiativeLimitRequest) -> CommandResponse:
         return enqueue(CommandType.SET_INITIATIVE_LIMIT, body, {"limit": body.limit})
+
+    @app.get("/api/v1/schedule")
+    def schedule_status() -> dict[str, Any]:
+        from ..schedule import DailyScheduler
+        with state_factory.connect() as state:
+            return DailyScheduler(state, settings).snapshot()
+
+    @app.post("/api/v1/settings/schedule", response_model=CommandResponse, status_code=202)
+    def set_schedule(body: MemorySubmission) -> CommandResponse:
+        return enqueue(CommandType.SET_SCHEDULE, body, body.payload)
 
     @app.post(
         "/api/v1/commands/trigger-initiative",
@@ -503,6 +617,10 @@ def create_web_app(
     )
     def resume(body: CommandSubmission) -> CommandResponse:
         return enqueue(CommandType.RESUME, body)
+
+    @app.post('/api/v1/commands/sync-history', response_model=CommandResponse, status_code=202)
+    def sync_history(body: CommandSubmission) -> CommandResponse:
+        return enqueue(CommandType.SYNC_HISTORY, body)
 
     @app.post("/api/v1/control/pause", response_model=PauseResponse)
     def pause(body: PauseRequest) -> PauseResponse:

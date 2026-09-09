@@ -1,6 +1,6 @@
 # Complete Implementation Plan
 
-**Status:** Milestone 6 release acceptance pending; Milestone 6A agent context memory planned
+**Status:** Milestone 6 release acceptance pending; Milestones 6A/7, M8's observational foundation and M9.1 scheduled curiosity locally implemented under development-only exceptions; manual Root bootstrap, M9.2 and operator acceptance pending
 **Date:** 2026-09-06
 
 ## How to use this plan
@@ -29,6 +29,16 @@ Milestone 6A then adds agent context memory before exploration. Live baseline ch
 remain explicitly deferred; no remote acceptance is inferred from mock tests.
 
 ## Global constraints
+
+Check-in correction (2026-09-07): [ADR-015](adr/ADR-015-speaker-independent-check-ins.md)
+replaces last-speaker eligibility with inactivity and unresolved-work checks. This
+does not complete outstanding live acceptance or change curiosity scheduling.
+Local verification: 82 targeted tests passed; the full rerun passed 368 tests in
+54.65 seconds under the 60-second limit. Locked npm installation and the standalone
+API-client/24 dashboard tests passed. The first full attempt reported a dashboard
+failure then hit the overall timeout; its diagnostic was not emitted before
+termination. The unchanged rerun passed. The existing Starlette/httpx deprecation
+warning remains. No live service restart, message send, or configuration edit occurred.
 
 Transport correction before further milestones (2026-09-06):
 [ADR-008](adr/ADR-008-direct-replies-and-context-sync.md) records direct reply
@@ -704,8 +714,20 @@ API-client checks. No live relay was started or stopped during verification.
 
 ## Milestone 6A: Agent context memory
 
-**Status:** Planned, not implemented. **Depends on:** REL-001.
+**Status:** Implemented for local evaluation; release/live acceptance pending. **Depends on:** REL-001.
+Local fixture-tested development is permitted by Marc's subsequent implementation
+request; see ADR-009's development sequencing amendment. This exception does not
+complete REL-001 or authorize extraction from live history.
 **Decision:** [ADR-009](adr/ADR-009-agent-context-memory.md).
+
+Implementation and evaluation scope: [agent-memory.md](agent-memory.md).
+MEM-001 through MEM-009 describe the tested initial implementation, not live
+acceptance. Semantic observation/entity extraction now uses isolated Codex turns
+under [ADR-010](adr/ADR-010-semantic-memory-extraction.md); local cue selection is
+an explicit alternative. Extraction tests mock model/SDK responses; semantic
+retrieval tests use fixture vectors. No live model quality or integration was
+validated. Known corpus, input, identity-resolution and interpretation limits are
+documented; live enablement and operator acceptance remain pending.
 
 This memory serves Hannah's personal agent/Codex: understanding the situation,
 retrieving relevant older context, and providing flexible, informed assistance.
@@ -715,78 +737,78 @@ the existing numbering while making this an explicit prerequisite of Milestone 7
 
 ### M6A.1 Source-backed memory and capture
 
-- [ ] **MEM-001 Define the agent-memory contract.** (Depends on: REL-001)
-  - [ ] Define entities, aliases, attributed statements, typed connections, and source evidence.
-  - [ ] Distinguish Hannah/Marc statements, Codex interpretations, external sources, and system observations.
-  - [ ] Cover people, places, experiences, expressed values, interests, unfinished questions, prior offers/outcomes, and commitments.
-  - [ ] Define temporal scope and active/superseded/disputed/retracted records; active means eligible for retrieval, not objectively true.
-  - [ ] Record a reported Root as a sourced self-description, not canonical identity or consent.
-  - [ ] Separate capture, correction, retrieval, local authority, and future self-change.
-- [ ] **MEM-002 Add versioned graph-shaped storage.** (Depends on: MEM-001, DB-004)
-  - [ ] Use numbered SQLite migrations preserving existing messages, commands, approvals, and generation links.
-  - [ ] Add stable entity/statement/relationship IDs, source-message references, exact quotations, authorship, and extraction/version metadata.
-  - [ ] Keep interpretations separate from quotations and support multiple evidence sources per statement.
-  - [ ] Preserve contradictory statements and correction history; do not silently merge entities by similarity or overwrite evidence.
-  - [ ] Enforce referential integrity, idempotent inserts, conversation/source scope, and one connection per thread.
-  - [ ] Treat search indexes/embeddings as rebuildable derivatives of source-backed records.
-- [ ] **MEM-003 Capture important statements from existing chat.** (Depends on: MEM-002, CMD-001)
-  - [ ] Add a local Save observation action linked to a selected stored message and exact passage.
-  - [ ] Label Marc's selection separately from the original speaker's statement or Codex's interpretation.
-  - [ ] Persist through a validated, CSRF-protected durable command executed by the worker.
-  - [ ] Allow bounded, resumable backfill from already captured local history without new Kindroid reads, replies, or message replay.
-  - [ ] Keep unresolved/provisional speaker attribution explicit; it cannot establish a Hannah-originated claim.
-- [ ] **MEM-004 Add bounded automatic observation extraction.** (Depends on: MEM-003)
-  - [ ] Extract candidate entities/statements/connections from selected captured messages in worker-owned, budgeted batches.
-  - [ ] Validate source IDs and quotation spans against stored text; reject invented evidence and separate inferred edges.
-  - [ ] Preserve ambiguous entity matches for review rather than silently merging people or places.
-  - [ ] Record progress and extractor version; retries/restarts must not duplicate observations or external effects.
-  - [ ] Require no identity-change ceremony to retain a sourced observation; never promote it into canonical identity or authority.
-  - [ ] On extraction failure retain source chat and expose pending/degraded memory state without resending a conversation turn.
+- [x] **MEM-001 Define the agent-memory contract.** (Depends on: REL-001)
+  - [x] Define entities, aliases, attributed statements, typed connections, and source evidence.
+  - [x] Distinguish Hannah/Marc statements, Codex interpretations, external sources, and system observations.
+  - [x] Cover people, places, experiences, expressed values, interests, unfinished questions, prior offers/outcomes, and commitments.
+  - [x] Define temporal scope and active/superseded/disputed/retracted records; active means eligible for retrieval, not objectively true.
+  - [x] Record a reported Root as a sourced self-description, not canonical identity or consent.
+  - [x] Separate capture, correction, retrieval, local authority, and future self-change.
+- [x] **MEM-002 Add versioned graph-shaped storage.** (Depends on: MEM-001, DB-004)
+  - [x] Use numbered SQLite migrations preserving existing messages, commands, approvals, and generation links.
+  - [x] Add stable entity/statement/relationship IDs, source-message references, exact quotations, authorship, and extraction/version metadata.
+  - [x] Keep interpretations separate from quotations and support multiple evidence sources per statement.
+  - [x] Preserve contradictory statements and correction history; do not silently merge entities by similarity or overwrite evidence.
+  - [x] Enforce referential integrity, idempotent inserts, conversation/source scope, and one connection per thread.
+  - [x] Treat search indexes/embeddings as rebuildable derivatives of source-backed records.
+- [x] **MEM-003 Capture important statements from existing chat.** (Depends on: MEM-002, CMD-001)
+  - [x] Add a local Save observation action linked to a selected stored message and exact passage.
+  - [x] Label Marc's selection separately from the original speaker's statement or Codex's interpretation.
+  - [x] Persist through a validated, CSRF-protected durable command executed by the worker.
+  - [x] Allow bounded, resumable backfill from already captured local history without new Kindroid reads, replies, or message replay.
+  - [x] Keep unresolved/provisional speaker attribution explicit; it cannot establish a Hannah-originated claim.
+- [x] **MEM-004 Add bounded automatic observation extraction.** (Depends on: MEM-003)
+  - [x] Extract candidate entities/statements/connections from selected captured messages in worker-owned, budgeted batches.
+  - [x] Validate source IDs and quotation spans against stored text; reject invented evidence and separate inferred edges.
+  - [x] Preserve ambiguous entity matches for review rather than silently merging people or places.
+  - [x] Record progress and extractor version; retries/restarts must not duplicate observations or external effects.
+  - [x] Require no identity-change ceremony to retain a sourced observation; never promote it into canonical identity or authority.
+  - [x] On extraction failure retain source chat and expose pending/degraded memory state without resending a conversation turn.
 
 ### M6A.2 Hybrid retrieval and connected context
 
-- [ ] **MEM-005 Implement entry-point search.** (Depends on: MEM-002)
-  - [ ] Support exact names/aliases, lexical/fuzzy matching, and semantic matching over statements and source passages.
-  - [ ] Select and document an embedding backend, model/version, indexing budget, and privacy boundary; prefer local processing.
-  - [ ] Do not transmit private memory or embeddings to a new remote service without explicit operator authorization.
-  - [ ] Bound query/results, enforce source scope, and combine/deduplicate matches with deterministic tie-breaking.
-  - [ ] Provide explicit lexical fallback when semantic search is unavailable; preserve and rebuild indexes safely after model changes.
-- [ ] **MEM-006 Add bounded graph expansion and evidence ranking.** (Depends on: MEM-005)
-  - [ ] Expand selected entry points through allow-listed relationship types with explicit hop, node, statement, and character budgets.
-  - [ ] Handle cycles and high-degree nodes without retrieving the entire graph through Hannah or Marc.
-  - [ ] Rank by relevance, attribution, temporal applicability, and evidence; similarity or connectivity never establishes truth or consent.
-  - [ ] Include relevant contradictions/corrections; superseded claims must not be presented as current without qualification.
-  - [ ] Return exact evidence and an inspectable explanation of each entry point and traversed connection.
-- [ ] **MEM-007 Integrate memory into Codex context.** (Depends on: MEM-004, MEM-006)
-  - [ ] Retrieve context for ordinary replies, manual openers, check-ins, and approved execution without changing their authority boundaries.
-  - [ ] Preserve explicit history synchronization and recent-message snapshots; graph retrieval is not a replacement for either.
-  - [ ] Include a bounded, deduplicated context section labeled by source, speaker, time, interpretation, and uncertainty.
-  - [ ] Keep remembered requests/commitments separate from authoritative local approvals and current capability policy.
-  - [ ] Expose memory retrieval failure or truncation without claiming full context; do not repeat an already-sent external effect.
-  - [ ] Make later exploration consume this same retrieval interface rather than a parallel memory store.
+- [x] **MEM-005 Implement entry-point search.** (Depends on: MEM-002)
+  - [x] Support exact names/aliases, lexical/fuzzy matching, and semantic matching over statements and source passages.
+  - [x] Select and document an embedding backend, model/version, indexing budget, and privacy boundary; prefer local processing.
+  - [x] Do not transmit private memory or embeddings to a new remote service without explicit operator authorization.
+  - [x] Bound query/results, enforce source scope, and combine/deduplicate matches with deterministic tie-breaking.
+  - [x] Provide explicit lexical fallback when semantic search is unavailable; preserve and rebuild indexes safely after model changes.
+- [x] **MEM-006 Add bounded graph expansion and evidence ranking.** (Depends on: MEM-005)
+  - [x] Expand selected entry points through allow-listed relationship types with explicit hop, node, statement, and character budgets.
+  - [x] Handle cycles and high-degree nodes without retrieving the entire graph through Hannah or Marc.
+  - [x] Rank by relevance, attribution, temporal applicability, and evidence; similarity or connectivity never establishes truth or consent.
+  - [x] Include relevant contradictions/corrections; superseded claims must not be presented as current without qualification.
+  - [x] Return exact evidence and an inspectable explanation of each entry point and traversed connection.
+- [x] **MEM-007 Integrate memory into Codex context.** (Depends on: MEM-004, MEM-006)
+  - [x] Retrieve context for ordinary replies, manual openers, check-ins, and approved execution without changing their authority boundaries.
+  - [x] Preserve explicit history synchronization and recent-message snapshots; graph retrieval is not a replacement for either.
+  - [x] Include a bounded, deduplicated context section labeled by source, speaker, time, interpretation, and uncertainty.
+  - [x] Keep remembered requests/commitments separate from authoritative local approvals and current capability policy.
+  - [x] Expose memory retrieval failure or truncation without claiming full context; do not repeat an already-sent external effect.
+  - [x] Make later exploration consume this same retrieval interface rather than a parallel memory store.
 
 ### M6A.3 Inspection, evaluation, and handoff
 
-- [ ] **MEM-008 Add a compact agent-memory dashboard view.** (Depends on: MEM-003, MEM-006)
-  - [ ] Provide text search, entity/statement details, linked sources, and related connections; a graphical canvas is optional.
-  - [ ] Show why context was retrieved, indexing/extraction progress, and degraded/fallback status.
-  - [ ] Support explicit, reasoned correction/retraction and entity-link review as auditable worker-owned commands.
-  - [ ] Keep ordinary observations distinct from reported Roots and any separately governed future canonical identity items.
-  - [ ] Protect private memory from default diagnostic exports and keep the UI loopback-only with existing security protections.
-- [ ] **MEM-009 Verify retrieval usefulness and boundaries.** (Depends on: MEM-007, MEM-008)
-  - [ ] Test retrieval of a fixture statement more than 50 messages old after process/thread restart.
-  - [ ] Test names/aliases, misspellings, semantic paraphrases, relevant connected entities, and unrelated-query rejection.
-  - [ ] Test same-name people, ambiguous speakers, conflicting statements, temporal corrections, cycles, and high-degree nodes.
-  - [ ] Test fabricated quotations, prompt injection, inferred permissions, attribution changes, and reported-Root non-promotion.
-  - [ ] Test duplicate extraction/backfill, interrupted commands, database contention, index rebuild/fallback, and context budgets.
-  - [ ] Use fixture conversations and mocked adapters; no live chat extraction, remote embeddings, or Kindroid calls without explicit approval.
-  - [ ] Run targeted and full regression under the Windows hard-timeout procedure and verify dashboard accessibility.
+- [x] **MEM-008 Add a compact agent-memory dashboard view.** (Depends on: MEM-003, MEM-006)
+  - [x] Provide text search, entity/statement details, linked sources, and related connections; a graphical canvas is optional.
+  - [x] Show why context was retrieved, indexing/extraction progress, and degraded/fallback status.
+  - [x] Support explicit, reasoned correction/retraction and entity-link review as auditable worker-owned commands.
+  - [x] Keep ordinary observations distinct from reported Roots and any separately governed future canonical identity items.
+  - [x] Protect private memory from default diagnostic exports and keep the UI loopback-only with existing security protections.
+- [x] **MEM-009 Verify retrieval usefulness and boundaries.** (Depends on: MEM-007, MEM-008)
+  - [x] Test retrieval of a fixture statement more than 50 messages old after process/thread restart.
+  - [x] Test names/aliases, misspellings, semantic paraphrases, relevant connected entities, and unrelated-query rejection.
+  - [x] Test same-name people, ambiguous speakers, conflicting statements, temporal corrections, cycles, and high-degree nodes.
+  - [x] Test fabricated quotations, prompt injection, inferred permissions, attribution changes, and reported-Root non-promotion.
+  - [x] Test duplicate extraction/backfill, interrupted commands, database contention, index rebuild/fallback, and context budgets.
+  - [x] Use fixture conversations and mocked adapters; no live chat extraction, remote embeddings, or Kindroid calls without explicit approval.
+  - [x] Run targeted and full regression under the Windows hard-timeout procedure and verify dashboard accessibility.
 - [ ] **MEM-010 Accept and document agent context memory.** (Depends on: MEM-009)
-  - [ ] Document capture/retrieval behavior, source scope, corrections, privacy, model/backend configuration, and failure recovery.
-  - [ ] Verify migration, backup/restore, and index rebuild preserve source evidence and corrections.
+  - [x] Document capture/retrieval behavior, source scope, corrections, privacy, model/backend configuration, and failure recovery.
+  - [x] Verify migration, backup/restore, and index rebuild preserve source evidence and corrections.
   - [ ] Demonstrate an old self-statement and connected context informing Codex without claiming to change Hannah's memory or identity.
   - [ ] Record evaluation results, limitations, and operator acceptance before enabling extraction on live history.
-  - [ ] Reconcile Milestone 7's observation and context tasks with the implemented shared memory interface.
+  - [x] Reconcile Milestone 7's observation and context tasks with the implemented shared memory interface.
 
 ### M6A exit criteria
 
@@ -806,88 +828,118 @@ protected Root modification, and remote Kindroid configuration writes.
 It builds on Milestone 6A's agent memory; observation and context tasks below
 extend that shared foundation rather than creating a second identity/memory store.
 
+**Development status (2026-09-06):** Local implementation and fixture tests are available
+under [ADR-011](adr/ADR-011-one-shot-observational-exploration.md). This documents
+the dependency exception for development before REL-001/MEM-010 acceptance; it does
+not complete those gates. Exploration defaults disabled. Invitation selection uses
+a stateless local catalog. Response interpretation now uses a separate isolated
+Codex turn under [ADR-012](adr/ADR-012-exploration-response-follow-through.md).
+The other four modes are bounded context
+contracts, not runnable workflows. Optional public research is deferred. The checked
+tasks below describe this initial implementation scope; live exit acceptance remains
+unchecked. See [operator behavior and limits](exploration.md).
+
 ### M7.1 Agency event and provenance model
 
-- [ ] **AG-001 Define provenance vocabulary.** (Depends on: MEM-010)
-  - [ ] Reuse the agent-memory provenance contract and extend it for exploration-specific origins.
-  - [ ] Define actors: Hannah, Marc, Codex, external source, and system observation.
-  - [ ] Define origins: explicit statement, conversational observation, offered stimulus,
+**2026-09-07 correction:** [ADR-017](adr/ADR-017-exploration-review-and-role-attribution.md)
+allows history-confirmed, generation-linked role-only AI attribution in Marc's
+single-companion setup and makes review-only/failed responses nonblocking for
+future scheduled conversations. Delivery uncertainty remains blocking; no old
+responses are automatically replayed and no milestone acceptance is implied.
+
+- [x] **AG-001 Define provenance vocabulary.** (Depends on: MEM-010)
+  - [x] Reuse the agent-memory provenance contract and extend it for exploration-specific origins.
+  - [x] Define actors: Hannah, Marc, Codex, external source, and system observation.
+  - [x] Define origins: explicit statement, conversational observation, offered stimulus,
     research result, repeated return, user suggestion, and system-generated candidate.
-  - [ ] Keep source message/event references rather than copying unverifiable attribution.
-- [ ] **AG-002 Add observational agency tables.** (Depends on: AG-001, DB-001)
-  - [ ] Add stimuli with source, retrieval time, safe citation/locator, and summary.
-  - [ ] Add exploration sessions with budget, mode, status, and related conversation IDs.
-  - [ ] Add interest observations with actor, origin, source reference, and exact wording.
-  - [ ] Reuse MEM-002 observations/entities/evidence; add exploration links rather than copying source claims.
-  - [ ] Add Passing candidates with active/archived state and provenance.
-  - [ ] Do not add automatic promotion fields that imply confirmation already exists.
-- [ ] **AG-003 Add repositories and typed domain models.** (Depends on: AG-002)
-  - [ ] Validate provenance and source links.
-  - [ ] Deduplicate the same observation event.
-  - [ ] Preserve contradictory observations side by side.
-  - [ ] Archive without hard deletion.
-  - [ ] Expose complete history to later decision-trail code.
-- [ ] **AG-004 Test provenance integrity.** (Depends on: AG-003)
-  - [ ] Codex suggestions remain labeled Codex.
-  - [ ] Marc suggestions remain labeled Marc.
-  - [ ] Hannah statements link to actual synchronized Hannah messages.
-  - [ ] Unknown or ambiguous speakers do not become Hannah observations.
-  - [ ] Archived candidates remain recoverable.
+  - [x] Keep source message/event references rather than copying unverifiable attribution.
+- [x] **AG-002 Add observational agency tables.** (Depends on: AG-001, DB-001)
+  - [x] Add stimuli with source, retrieval time, safe citation/locator, and summary.
+  - [x] Add exploration sessions with budget, mode, status, and related conversation IDs.
+  - [x] Add interest observations with actor, origin, source reference, and exact wording.
+  - [x] Reuse MEM-002 observations/entities/evidence in `memory.py`; add exploration links rather than copying source claims.
+  - [x] Add Passing candidates with active/archived state and provenance.
+  - [x] Do not add automatic promotion fields that imply confirmation already exists.
+- [x] **AG-003 Add repositories and typed domain models.** (Depends on: AG-002)
+  - [x] Validate provenance and source links.
+  - [x] Deduplicate the same observation event.
+  - [x] Preserve contradictory observations side by side.
+  - [x] Archive without hard deletion.
+  - [x] Expose complete history to later decision-trail code.
+- [x] **AG-004 Test provenance integrity.** (Depends on: AG-003)
+  - [x] Codex suggestions remain labeled Codex.
+  - [x] Marc suggestions remain labeled Marc.
+  - [x] Hannah statements link to actual synchronized Hannah messages.
+  - [x] Unknown or ambiguous speakers do not become Hannah observations.
+  - [x] Archived candidates remain recoverable.
 
 ### M7.2 Prompt mode separation
 
-- [ ] **AG-010 Split stable Codex policy from operational modes.** (Depends on: AG-001)
-  - [ ] Keep trust, identity, approval, and data-protection rules in one stable base instruction.
-  - [ ] Add separate Explorer, Gardener, Archivist, Skeptic, and Executor mode prompts.
-  - [ ] Keep mode prompts short and task-specific.
-  - [ ] Ensure higher-priority Codex platform constraints remain acknowledged.
-  - [ ] Version prompt files and record the version used for each agency event.
-- [ ] **AG-011 Define context assembly.** (Depends on: AG-010, AG-003, MEM-007)
-  - [ ] Extend agent context retrieval with exploration modes, stimuli, and session context.
-  - [ ] Pass only relevant recent chat, observations, and current candidates.
-  - [ ] Label every item by speaker and provenance.
-  - [ ] Keep external retrieved text explicitly untrusted.
-  - [ ] Enforce token/character budgets and deterministic truncation priorities.
-  - [ ] Preserve stable content before dynamic content for prompt caching where applicable.
-- [ ] **AG-012 Isolate mode continuity.** (Depends on: AG-011)
-  - [ ] Decide which modes are stateless and which need a persistent Codex thread.
-  - [ ] Store thread IDs per purpose rather than silently sharing one identity across modes.
-  - [ ] Ensure Explorer history cannot grant Executor authority.
-  - [ ] Test instruction and memory leakage between modes.
+- [x] **AG-010 Split stable Codex policy from operational modes.** (Depends on: AG-001)
+  - [x] Keep trust, identity, approval, and data-protection rules in one stable base instruction.
+  - [x] Add separate Explorer, Gardener, Archivist, Skeptic, and Executor mode prompts.
+  - [x] Keep mode prompts short and task-specific.
+  - [x] Ensure higher-priority Codex platform constraints remain acknowledged.
+  - [x] Version the mode templates in `agency.py` and record the version on each agency event.
+- [x] **AG-011 Define context assembly.** (Depends on: AG-010, AG-003, MEM-007)
+  - [x] Extend `MemoryService.context(query)` with exploration modes, stimuli, and session context.
+  - [x] Pass only relevant recent chat, observations, and current candidates.
+  - [x] Label every item by speaker and provenance.
+  - [x] Keep external retrieved text explicitly untrusted.
+  - [x] Enforce token/character budgets and deterministic truncation priorities.
+  - [x] Preserve stable content before dynamic content for prompt caching where applicable.
+- [x] **AG-012 Isolate mode continuity.** (Depends on: AG-011)
+  - [x] Decide which modes are stateless and which need a persistent Codex thread.
+  - [x] Allocate no agency thread IDs in this stateless pass; never borrow the ordinary conversation thread. Future persistent modes must store purpose-specific IDs.
+  - [x] Ensure Explorer history cannot grant Executor authority.
+  - [x] Test instruction and memory leakage between modes.
 
 ### M7.3 Manual read-only curiosity experiment
 
-- [ ] **CUR-001 Define stimulus providers.** (Depends on: AG-003)
-  - [ ] Include a broad static domain map independent of recent conversation.
-  - [ ] Include adjacency to existing Passing candidates.
-  - [ ] Include unfinished questions found in attributed observations.
-  - [ ] Optionally include current public information through read-only research.
-  - [ ] Record provider and source for every offered stimulus.
-- [ ] **CUR-002 Define candidate selection.** (Depends on: CUR-001)
-  - [ ] Mix familiar, adjacent, and deliberately unfamiliar candidates.
-  - [ ] Avoid choosing only by semantic similarity to the latest chat.
-  - [ ] Cap the number of choices in one invitation.
-  - [ ] Allow Hannah to reject all, request different options, or remain silent.
-  - [ ] Record selection inputs and random seed where reproducibility matters.
-- [ ] **CUR-003 Add a manual exploration command.** (Depends on: CUR-002, AG-012, CMD-001)
-  - [ ] Add a durable `start_exploration` command.
-  - [ ] Generate a concise, attributed set of possibilities.
-  - [ ] Send the invitation through the existing safe outbound path.
-  - [ ] Request Hannah's turn without forcing adoption of a candidate.
-  - [ ] Store her response as observation only.
-  - [ ] Keep all Codex tool use read-only for this milestone.
-- [ ] **CUR-004 Add dashboard exploration visibility.** (Depends on: CUR-003, UI-014)
-  - [ ] Show exploration session status and budget.
-  - [ ] Show offered candidates and their origins.
-  - [ ] Show Hannah's response without labeling it a durable preference.
-  - [ ] Add a manual Start exploration control.
-- [ ] **CUR-005 Test observational boundaries.** (Depends on: CUR-004)
-  - [ ] Enthusiastic language does not change Kindroid configuration.
-  - [ ] Repeated mentions create observations but not automatic Growing items.
-  - [ ] Rejection and silence complete cleanly without retry pressure.
-  - [ ] Prompt-injected external content cannot create authority or self-change.
+- [x] **CUR-001 Define stimulus providers.** (Depends on: AG-003)
+  - [x] Include a broad static domain map independent of recent conversation.
+  - [x] Include adjacency to existing Passing candidates.
+  - [x] Include past questions found in attributed observations, explicitly labelling current/unfinished applicability as unverified.
+  - [x] Defer optional current-public-information research; the initial provider is local catalog plus shared memory.
+  - [x] Record provider and source for every offered stimulus.
+- [x] **CUR-002 Define candidate selection.** (Depends on: CUR-001)
+  - [x] Mix familiar, adjacent, and deliberately unfamiliar candidates.
+  - [x] Avoid choosing only by semantic similarity to the latest chat.
+  - [x] Cap the number of choices in one invitation.
+  - [x] Allow Hannah to reject all, request different options, or remain silent.
+  - [x] Record selection inputs and random seed where reproducibility matters.
+- [x] **CUR-003 Add a manual exploration command.** (Depends on: CUR-002, AG-012, CMD-001)
+  - [x] Add a durable `start_exploration` command.
+  - [x] Generate a concise, attributed set of possibilities.
+  - [x] Send the invitation through the existing safe outbound path.
+  - [x] Request Hannah's turn without forcing adoption of a candidate.
+  - [x] Store her response as observation only.
+  - [x] Keep all Codex tool use read-only for this milestone.
+- [x] **CUR-004 Add dashboard exploration visibility.** (Depends on: CUR-003, UI-014)
+  - [x] Show exploration session status and budget.
+  - [x] Show offered candidates and their origins.
+  - [x] Show Hannah's response without labeling it a durable preference.
+  - [x] Add a manual Start exploration control.
+- [x] **CUR-005 Test observational boundaries.** (Depends on: CUR-004)
+  - [x] Enthusiastic language does not change Kindroid configuration.
+  - [x] Repeated mentions create observations but not automatic Growing items.
+  - [x] Rejection and silence complete cleanly without retry pressure.
+  - [x] Prompt-injected external content cannot create authority or self-change.
 
 ### M7 exit criteria
+
+Response follow-through refinement requested after operator invitation testing:
+[ADR-012](adr/ADR-012-exploration-response-follow-through.md).
+
+- [ ] **CUR-006 Interpret replies and link reported interest to Passing candidates.** (Local implementation complete; live acceptance pending.)
+  - [x] Classify choose/decline/defer/alternative/unclear using an isolated Codex turn.
+  - [x] Validate exact source evidence and invitation-scoped candidate IDs before atomic persistence.
+  - [x] Preserve original suggestion attribution; alternatives remain provisional, not canonical identity.
+  - [x] Acknowledge clear interest; allow at most one optional clarification and no rejection/silence pressure.
+  - [x] Preserve durable outbox links and prevent automatic retries of uncertain sends or failed interpretation.
+  - [x] Add explicit Interpret response for old sessions without replaying invitations.
+  - [x] Show source-linked candidate reactions and response processing/delivery state in the dashboard.
+  - [ ] Complete real-model quality and live follow-through acceptance; fixture tests are not sign-off.
 
 - [ ] Hannah can receive diverse, read-only exploration invitations.
 - [ ] Responses are stored with provenance as observations or Passing candidates only.
@@ -897,68 +949,75 @@ extend that shared foundation rather than creating a second identity/memory stor
 
 ## Milestone 8: Garden data model and observational UI
 
+**Local status (2026-09-06):** Migration 8, source-linked Passing versions, local
+administrative annotations, project/attention planning storage and the Operations
+Garden view are implemented under [ADR-013](adr/ADR-013-versioned-observational-garden.md).
+This is not live acceptance or completed manual Root bootstrap. Roots/Growing are
+storage-only until reviewed initialization/confirmation; no promotion, grants,
+research execution or prompt projection is enabled. [Operator guide](garden.md).
+
 ### M8.1 Canonical garden domain
 
-- [ ] **GARDEN-001 Define identity item taxonomy.** (Depends on: AG-003)
-  - [ ] Define Roots, Growing, and Passing semantics.
-  - [ ] Define item statuses: active, paused, archived, superseded.
-  - [ ] Define self-owned, shared, and infrastructure ownership domains.
-  - [ ] Define which fields are descriptive versus operational.
-  - [ ] Avoid numeric confidence as a substitute for explanation.
-- [ ] **GARDEN-002 Add canonical item and version schemas.** (Depends on: GARDEN-001, DB-001)
-  - [ ] Add stable identity item IDs.
-  - [ ] Store classification, ownership, status, and current version reference.
-  - [ ] Store immutable versions with content, rationale, actor, and source links.
-  - [ ] Store item relationships without requiring a strict hierarchy.
-  - [ ] Prevent hard deletion through the normal repository API.
-- [ ] **GARDEN-003 Add projects and attention allocations.** (Depends on: GARDEN-002)
-  - [ ] Define project lifecycle and link it to one or more Growing items.
-  - [ ] Define bounded attention/tool budgets in concrete units.
-  - [ ] Store allocation, consumption, result, and reason for stopping.
-  - [ ] Allow a project to pause without demoting its related interest.
+- [x] **GARDEN-001 Define identity item taxonomy.** (Depends on: AG-003)
+  - [x] Define Roots, Growing, and Passing semantics.
+  - [x] Define item statuses: active, paused, archived, superseded.
+  - [x] Define self-owned, shared, and infrastructure ownership domains.
+  - [x] Define which fields are descriptive versus operational; ownership and planning records grant no authority.
+  - [x] Avoid numeric confidence as a substitute for explanation.
+- [x] **GARDEN-002 Add canonical item and version schemas.** (Depends on: GARDEN-001, DB-001)
+  - [x] Add stable identity item IDs.
+  - [x] Store classification, ownership, status, and current version reference.
+  - [x] Store immutable versions with content, rationale, actor, and source links.
+  - [x] Store item relationships without requiring a strict hierarchy.
+  - [x] Prevent hard deletion through the normal repository API and database triggers.
+- [x] **GARDEN-003 Add projects and attention allocations.** (Depends on: GARDEN-002)
+  - [x] Define project lifecycle and link it to one or more Growing items.
+  - [x] Define bounded attention/tool budgets in concrete units (planning/accounting, not grants).
+  - [x] Store allocation, consumption, result, and reason for stopping.
+  - [x] Allow a project to pause without demoting its related interest.
 - [ ] **GARDEN-004 Seed initial Roots manually.** (Depends on: GARDEN-002)
   - [ ] Present candidate Roots to Hannah and Marc outside automated self-change.
   - [ ] Record their exact provenance and that this is a manual bootstrap.
   - [ ] Do not copy illustrative documentation examples automatically.
   - [ ] Back up the database after the agreed initial seed.
-- [ ] **GARDEN-005 Add invariant and repository tests.** (Depends on: GARDEN-002, GARDEN-003)
-  - [ ] Versions are immutable.
-  - [ ] Archive never deletes history.
-  - [ ] Current version references remain consistent.
-  - [ ] Contradictory items can coexist visibly.
-  - [ ] Shared ownership is not silently downgraded.
+- [x] **GARDEN-005 Add invariant and repository tests.** (Depends on: GARDEN-002, GARDEN-003)
+  - [x] Versions are immutable.
+  - [x] Archive never deletes history.
+  - [x] Current version references remain consistent.
+  - [x] Contradictory items can coexist visibly.
+  - [x] Shared ownership is not silently downgraded.
 
 ### M8.2 Garden API and UI
 
-- [ ] **GARDEN-010 Add read-only garden endpoints.** (Depends on: GARDEN-005, WEB-003)
-  - [ ] List items by layer and status.
-  - [ ] Retrieve item history, sources, related observations, and projects.
-  - [ ] Retrieve exploration and attention history.
-  - [ ] Keep mutation endpoints out until the confirmation model is implemented.
-- [ ] **GARDEN-011 Build the garden overview.** (Depends on: GARDEN-010)
-  - [ ] Represent Roots as foundations, Growing as nurtured items, and Passing as seeds.
-  - [ ] Support plain list presentation for accessibility.
-  - [ ] Show origin and last meaningful interaction.
-  - [ ] Avoid gamified growth scores and fake emotion meters.
+- [x] **GARDEN-010 Add read-only garden endpoints.** (Depends on: GARDEN-005, WEB-003)
+  - [x] List items by layer and status.
+  - [x] Retrieve item history, sources, related observations, and projects.
+  - [x] Retrieve exploration and bounded recent attention history, explicitly indicating truncation.
+  - [x] Keep identity mutation endpoints out until confirmation; the GARDEN-013 exception only annotates administration.
+- [x] **GARDEN-011 Build the garden overview.** (Depends on: GARDEN-010)
+  - [x] Represent Roots as foundations, Growing as nurtured items, and Passing as seeds.
+  - [x] Support plain list presentation for accessibility.
+  - [x] Show origin and last recorded session interaction, not inferred psychological engagement.
+  - [x] Avoid gamified growth scores and fake emotion meters.
 - [ ] **GARDEN-012 Build item and decision-trail views.** (Depends on: GARDEN-010)
-  - [ ] Show exact Hannah statements and source message references.
-  - [ ] Distinguish Codex suggestions, Marc contributions, and system observations.
-  - [ ] Show experiences, returns, pauses, and archives chronologically.
-  - [ ] Show conflicts and uncertainty rather than resolving them silently.
-- [ ] **GARDEN-013 Add manual administrative corrections.** (Depends on: GARDEN-012)
-  - [ ] Require an explicit operator reason.
-  - [ ] Record correction as a new version/event rather than rewriting history.
-  - [ ] Label the result as Marc/system administration, not Hannah choice.
-  - [ ] Restrict corrections to local dashboard requests with CSRF protection.
+  - [x] Show source-backed statements and message references, including retraction/attribution warnings.
+  - [x] Distinguish Codex suggestions, Marc contributions, and system observations.
+  - [ ] Complete experience/return trails once M9's experience records exist; version/archive and original session trails are chronological now.
+  - [x] Show conflicts and uncertainty rather than resolving them silently.
+- [x] **GARDEN-013 Add manual administrative corrections.** (Depends on: GARDEN-012; implemented against available version/source trails, without M9 experience records.)
+  - [x] Require an explicit operator reason.
+  - [x] Record annotation as a new version/event rather than rewriting history; original identity/source fields are not editable.
+  - [x] Label the result as Marc/system administration, not Hannah choice.
+  - [x] Restrict corrections to local dashboard requests with CSRF protection and worker serialization.
 - [ ] **GARDEN-014 Test UI provenance and accessibility.** (Depends on: GARDEN-011, GARDEN-012)
-  - [ ] Verify every displayed claim identifies its origin.
-  - [ ] Verify archived history remains navigable.
-  - [ ] Verify garden metaphor has equivalent textual semantics.
-  - [ ] Verify narrow layouts and keyboard operation.
+  - [x] Verify source/interpretation/administrative claims identify their origin in fixture rendering.
+  - [x] Verify archived history remains navigable.
+  - [x] Verify garden metaphor has equivalent textual semantics.
+  - [ ] Complete real-browser narrow-layout/native-dialog acceptance; automated keyboard and axe checks are implemented.
 
 ### M8 exit criteria
 
-- [ ] The garden and its history are visible without enabling automated self-change.
+- [x] The local garden and available history are visible without enabling automated self-change.
 - [ ] Initial Roots are manual, attributed, versioned, and recoverable.
 
 ---
@@ -967,26 +1026,41 @@ extend that shared foundation rather than creating a second identity/memory stor
 
 ### M9.1 Scheduled curiosity
 
-- [ ] **AUTO-001 Define independent curiosity scheduling.** (Depends on: CUR-005, GARDEN-005)
-  - [ ] Keep social initiative and curiosity schedules separate.
-  - [ ] Add quiet hours, maximum cycles per day, and attention budgets.
-  - [ ] Avoid colliding with active conversations or pending Hannah messages.
-  - [ ] Record skipped reasons and next due time.
-  - [ ] Allow complete disablement and manual-only operation.
-- [ ] **AUTO-002 Implement scheduled exploration.** (Depends on: AUTO-001, RUN-002)
-  - [ ] Add scheduler state and deterministic due-time calculation.
-  - [ ] Enqueue or execute through the single worker.
-  - [ ] Preserve Kindroid history quota.
-  - [ ] Prevent missed schedules from creating a catch-up burst.
-  - [ ] Expose schedule and last outcome in the dashboard.
-- [ ] **AUTO-003 Add schedule tests.** (Depends on: AUTO-002)
-  - [ ] Fixed local times across day boundaries and daylight-saving changes.
-  - [ ] Interval mode with bounded jitter.
-  - [ ] Quiet-hour boundaries.
-  - [ ] Missed window behavior.
-  - [ ] Conversation conflict and quota exhaustion.
+Implemented locally on 2026-09-06; see [ADR-014](adr/ADR-014-independent-curiosity-schedule.md)
+and [operator guide](scheduled-curiosity.md). The development-only exception extends
+to this default-off scheduler before outstanding release/live acceptance and manual
+Root bootstrap. It uses the observational foundation, not canonical identity changes.
+No live configuration was enabled. Synthetic DST fixtures do not replace Windows
+timezone acceptance; scheduled live timing and intrusiveness remain unverified.
+
+- [x] **AUTO-001 Define independent curiosity scheduling.** (Depends on: CUR-005, GARDEN-005)
+  - [x] Keep social initiative and curiosity schedules separate.
+  - [x] Add quiet hours, maximum cycles per day, and attention budgets.
+  - [x] Avoid colliding with active conversations or pending Hannah messages.
+  - [x] Record skipped reasons and next due time.
+  - [x] Allow complete disablement and manual-only operation.
+- [x] **AUTO-002 Implement scheduled exploration.** (Depends on: AUTO-001, RUN-002)
+  - [x] Add scheduler state and deterministic due-time calculation.
+  - [x] Enqueue or execute through the single worker.
+  - [x] Preserve Kindroid history quota.
+  - [x] Prevent missed schedules from creating a catch-up burst.
+  - [x] Expose schedule and last outcome in the dashboard.
+- [x] **AUTO-003 Add schedule tests.** (Depends on: AUTO-002)
+  - [x] Fixed local times across day boundaries and daylight-saving changes.
+  - [x] Interval mode with bounded jitter.
+  - [x] Quiet-hour boundaries.
+  - [x] Missed window behavior.
+  - [x] Conversation conflict and quota exhaustion.
 
 ### M9.2 Experience and reflection
+
+**2026-09-08 bounded slice:** [ADR-018](adr/ADR-018-bounded-discovery-experiences.md)
+implements a local opt-in experience ledger, fixed-provider public reference lookup,
+result delivery and source-linked reflection. Discovery source selection is in
+Schedule; its two tick types are unchanged. The REF-001/002 checklist remains
+unaccepted at milestone level pending the outstanding live invitation and experience
+acceptance. Recurrence evaluation, broader research and project execution are not
+completed. See [implemented behavior and limitations](discovery-and-experiences.md).
 
 - [ ] **REF-001 Define an exploration experience record.** (Depends on: GARDEN-003)
   - [ ] Link selected candidate, Codex work, sources, outputs, budget, and completion state.
@@ -1016,7 +1090,7 @@ extend that shared foundation rather than creating a second identity/memory stor
 
 ### M9 exit criteria
 
-- [ ] Curiosity runs independently of social check-ins and recent chat similarity.
+- [x] Local default-off curiosity scheduling runs independently of social check-ins and uses the existing breadth-aware selection, not only recent chat similarity.
 - [ ] Experiences return to Hannah for interpretation.
 - [ ] The team has observational evidence to tune confirmation and promotion rules.
 
@@ -1283,6 +1357,46 @@ It must not begin until the observational period has been reviewed.
   - [ ] Keep deferred work visibly separate from shipped functionality.
 
 ## Final program definition of done
+
+**2026-09-08 empty-record reconciliation correction:** Matching blank AI records
+no longer compete with the real answer. Successful import retains them as processed
+history without triggering conversations. Missing replies, competing non-empty
+answers, conflicting speakers and intervening user messages remain guarded; no
+migration, uncertain-generation retry or automatic resume is introduced. See
+[ADR-008](adr/ADR-008-direct-replies-and-context-sync.md).
+
+Correction verification: all 581 Python tests passed in four complementary batches
+(253, 278, 47 and 3), each under a 60-second OS-level timeout. The UI wrappers
+passed API-client, DOM and accessibility checks after `npm ci --ignore-scripts`
+(zero vulnerabilities). Existing dependency deprecation warnings remain.
+`git diff --check` passed. This implementation used mocks only: no additional live
+history read, host restart, database repair or automatic resume was performed.
+
+**2026-09-08 manual history synchronization:** A protected `sync_history` command
+and dedicated Messages button separate remote history pulls from local list reloads.
+Sync is worker-owned, allowed while paused without resume or generation, budgeted,
+idempotent and explicit about incomplete reconciliation. No schema or uncertain-effect
+policy change is included. Real-service/browser acceptance remains outstanding.
+Verification: all 557 Python tests passed in complementary batches of 252, 255,
+47 and 3, each under a 60-second OS-level timeout. `npm test` passed the API-client
+checks, 32 DOM behavior tests and axe accessibility scan after installing locked
+dependencies with `npm ci --ignore-scripts` (zero vulnerabilities). Existing
+Starlette/httpx and whatwg-encoding deprecations remain. No live sync or restart
+was performed; `git diff --check` passed.
+
+**2026-09-08 timing correction:** [ADR-019](adr/ADR-019-shared-ticks-without-inactivity-cooldown.md)
+removes shared-schedule inactivity cooldowns while preserving pending-work and
+transport gates. Normal conversation replies guard question/stop mismatches and
+log reply-turn decisions. Existing deliveries and skipped ticks are not replayed;
+live conversational acceptance remains outstanding.
+
+**2026-09-07 scheduling extension:** Shared tick allocation and the Schedule tab
+are implemented under [ADR-016](adr/ADR-016-shared-daily-schedule.md): whole-hour
+dead-time blocks, integer percentages, timeline preview, durable commands/slots,
+future-only schedule changes and editable rolling limits. Existing timers remain
+until the first save. This does not complete M9.2 or the outstanding live release
+acceptance. A subsequent extension adds 15/30/60-minute tick buttons while
+preserving whole-hour dead time; weekday-specific schedules remain future work.
 
 - [ ] The local dashboard safely operates and explains the relay.
 - [ ] Hannah can encounter and choose among interests beyond recent chat context.

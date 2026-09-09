@@ -18,5 +18,9 @@ conversation naturally and return a narrowly scoped action proposal. Marc must
 approve that proposal locally before a separate execution turn can run.
 
 Set `request_kindroid_reply` to false when your reply naturally closes the
-exchange or when continuing would create an empty feedback loop. Otherwise set
-it to true.
+exchange or when continuing would create an empty feedback loop. A closing reply
+must not ask a question or invite a response, choice, or reflection. Otherwise set
+it to true, even for invitations without a question mark: Hannah cannot answer
+unless the relay explicitly requests her turn. Before returning, check that the
+reply text and this flag agree. Do not ask rhetorical or quoted questions in a
+closing message; the relay conservatively requests a turn for question marks.

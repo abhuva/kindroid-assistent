@@ -15,6 +15,17 @@ failure, reload, and restart behavior; live/browser release acceptance is pendin
 
 ## Repository state
 
+**2026-09-08 discovery update:** Current schema is 11. New `discovery.py`,
+`public_sources.py` and `experience.py` implement default-off public stimuli and
+bounded lookup/result/reflection. See [operator guide](discovery-and-experiences.md).
+The dated schema/module descriptions below remain historical snapshots.
+
+**2026-09-07 scheduling update:** The current schema is 10. `schedule.py`,
+`daily_schedule`/`daily_slots`, the shared worker clock and the Schedule tab are
+implemented. This historical baseline's earlier schema/module lists are not the
+current inventory. See [Schedule controls](../README.md#schedule-tab) and
+[ADR-016](adr/ADR-016-shared-daily-schedule.md).
+
 The active application is a Python package under `src/kindroid_relay`. The older
 Gemini scheduler and custom MCP bridge are historical reference under `_archive`.
 The worktree may contain pre-existing user changes; in particular, archived
@@ -174,7 +185,9 @@ See [ADR-008](adr/ADR-008-direct-replies-and-context-sync.md).
 
 Initiative may use fixed local wall-clock hours or an interval with jitter. At a
 due time the relay checks pause state, local attempt budget, pending messages,
-latest speaker, and quiet hours. It asks Codex for a recent-context-aware social
+inactivity, unresolved delivery, and quiet hours. The last speaker is no longer an
+eligibility condition; see [ADR-015](adr/ADR-015-speaker-independent-check-ins.md).
+It asks Codex for a recent-context-aware social
 check-in, posts it, and offers Kindroid a turn with `allow_user=true`. Hannah may
 therefore decline the generated turn.
 

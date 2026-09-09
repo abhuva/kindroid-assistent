@@ -45,6 +45,7 @@ class Relay:
         self.phase_context = phase_context or (lambda _phase, _note: nullcontext())
         self.initiative_outcome: str | None = None
         self._context_synced_at = 0.0
+        self.context_operation: Callable[[], bool] | None = None
 
     def _event(
         self,
@@ -239,7 +240,8 @@ class Relay:
             raise
         for message in messages:
             if message.id not in reconciled:
-                processed = message.sender_type != "ai"
+                # Retain blank history records, but never treat them as chat turns.
+                processed = message.sender_type != "ai" or not message.message.strip()
                 known_outbound = (
                     message.sender_type == "user"
                     and self.state.is_known_outbound(message.message)
@@ -290,6 +292,13 @@ class Relay:
             raise
         self._context_synced_at = time.monotonic()
         self.state.set_meta("context_synced_at", int(time.time()))
+        # Consume exploration replies before the ordinary, tool-capable chat loop.
+        from .agency import AgencyStore
+        AgencyStore(self.state, self.settings.group_id, self.settings.kindroid_display_name).reconcile()
+        from .exploration_response import ResponseStore
+        ResponseStore(self.state, self.settings.group_id, self.settings.kindroid_display_name).reconcile()
+        from .experience import ExperienceStore
+        ExperienceStore(self.state, self.settings.group_id, self.settings.kindroid_display_name).reconcile()
 
     def bootstrap(self, *, respond_to_latest: bool = False, force: bool = False) -> int:
         if self.state.get_meta("bootstrapped", "0") == "1" and not force:
@@ -306,7 +315,7 @@ class Relay:
         self._context_synced_at = time.monotonic()
         return inserted
 
-    def run_once(self, *, initiative_now: bool = False) -> int:
+    def run_once(self, *, initiative_now: bool = False, after_sync: Callable[[], bool] | None = None) -> int:
         self.initiative_outcome = None
         if self.state.is_paused():
             logger.info("Relay is paused: %s", self.state.get_meta("pause_reason", ""))
@@ -321,6 +330,9 @@ class Relay:
             return 0
 
         self.synchronize_context()
+        after_sync = after_sync or self.context_operation
+        if after_sync is not None and after_sync():
+            return 0
         self._maybe_offer_initiative(force_due=initiative_now)
         handled = 0
         pending = self.state.pending_ai_messages()
@@ -413,6 +425,7 @@ class Relay:
                 current.display_name,
             )
             delivered = self.state.outbox_for_source(current.id)
+            decision_reason = "stored_decision" if delivered is not None else "model_decision"
             if delivered is not None and delivered["status"] == "sent":
                 outbox_id = str(delivered["id"])
                 request_kindroid_reply = bool(delivered["request_kindroid_reply"])
@@ -454,19 +467,42 @@ class Relay:
                     self._mark_message_processed(current.id)
                     return
 
-                body = self._limit_reply(reply.reply)
+                body = self._outbound_body(self._limit_reply(reply.reply))
+                request_kindroid_reply = reply.request_kindroid_reply
+                if delivered is not None:
+                    # Recovery follows the durable decision, never reinterprets an
+                    # old delivered/pending message to create a surprise extra turn.
+                    request_kindroid_reply = bool(delivered["request_kindroid_reply"])
+                elif not request_kindroid_reply and any(mark in body for mark in "?\uff1f\u061f"):
+                    # Conservative fallback, not semantic question classification.
+                    # Persist before sending so recovery keeps the corrected flag.
+                    request_kindroid_reply = True
+                    decision_reason = "question_requires_reply"
                 outbox_id = self._send_user_message(
                     body,
                     source_message_id=current.id,
-                    request_kindroid_reply=reply.request_kindroid_reply,
+                    request_kindroid_reply=request_kindroid_reply,
                 )
-                request_kindroid_reply = reply.request_kindroid_reply
             self._mark_message_processed(current.id)
             turns = self.state.get_int("consecutive_turns", 0) + 1
             self.state.set_meta("consecutive_turns", turns)
 
+            summary = (
+                "Hannah reply requested: corrected question/stop mismatch"
+                if decision_reason == "question_requires_reply" else
+                "Hannah reply requested by Codex" if request_kindroid_reply else
+                "Exchange ended: Codex requested no Hannah reply"
+            )
+            logger.info(summary)
+            self._event(
+                "reply_turn_decision", ActivitySeverity.INFO, summary,
+                details={"source_message_id": current.id, "outbox_id": outbox_id,
+                         "outcome": "reply_requested" if request_kindroid_reply else "no_reply_requested",
+                         "reason": decision_reason},
+                correlation_id=outbox_id,
+            )
+
             if not request_kindroid_reply:
-                logger.info("Codex closed the exchange naturally")
                 self.state.set_meta("consecutive_turns", 0)
                 return
 
@@ -526,6 +562,7 @@ class Relay:
         *,
         source_message_id: str | None = None,
         request_kindroid_reply: bool | None = None,
+        outbox_created: Callable[[str], None] | None = None,
     ) -> str:
         body = self._outbound_body(body)
         if self.state.turns.has_uncertain():
@@ -572,6 +609,11 @@ class Relay:
                 },
                 correlation_id=outbox_id,
             )
+        if outbox_created is not None:
+            # Link the session before the first external effect, including crashes.
+            outbox_created(outbox_id)
+        if outbox_created is not None and self.state.is_paused():
+            raise RuntimeError("Relay paused before outbound delivery")
         self.state.set_outbox_status(outbox_id, "sending")
         outbound_details = {
             "outbox_id": outbox_id,
@@ -773,6 +815,9 @@ class Relay:
         return message
 
     def _schedule_initiative(self, *, base_at: int | None = None) -> None:
+        from .schedule import saved_schedule
+        if saved_schedule(self.state, self.settings.group_id) is not None:
+            return
         if not self.settings.initiative_enabled:
             return
         if self.settings.initiative_schedule_hours:
@@ -836,6 +881,9 @@ class Relay:
         return False
 
     def _maybe_offer_initiative(self, *, force_due: bool = False) -> bool:
+        from .schedule import saved_schedule
+        if not force_due and saved_schedule(self.state, self.settings.group_id) is not None:
+            return False
         if not self.settings.initiative_enabled or self.state.is_paused():
             if force_due:
                 outcome = "paused" if self.state.is_paused() else "disabled"
@@ -898,20 +946,16 @@ class Relay:
                 details={"outcome": "empty_room"},
             )
             return False
-        if latest.sender_type != "user" or (
-            latest.display_name.casefold()
-            != self.settings.codex_display_name.casefold()
-            and not self.state.is_known_outbound(latest.message)
-        ):
-            self._set_initiative_outcome("latest_not_codex")
-            logger.info("Initiative check skipped because Codex was not the latest speaker")
-            self._event(
-                "initiative_skipped",
-                ActivitySeverity.INFO,
-                "Initiative check skipped because Codex was not the latest speaker",
-                details={"outcome": "latest_not_codex"},
-            )
-            return False
+        # Initiation is independent of turn ownership. A processed Hannah reply
+        # or a Marc message can end a conversation just as a Codex reply can.
+        # Keep the idle check separate from pending-message/delivery safety.
+        if self.state.connection.execute(
+            "SELECT 1 FROM outbox WHERE status IN ('pending','sending','uncertain') LIMIT 1"
+        ).fetchone():
+            return self._skip_initiative("delivery_unresolved", "Check-in skipped because delivery remains unresolved")
+        timestamp = self._message_epoch_seconds(latest)
+        if self.settings.initiative_idle_seconds > 0 and (timestamp is None or timestamp + self.settings.initiative_idle_seconds > now):
+            return self._skip_initiative("recent_conversation", "Check-in skipped because conversation activity is recent or its time is unknown")
         if self._inside_quiet_hours():
             self._set_initiative_outcome("quiet_hours")
             logger.info("Initiative check skipped during configured quiet hours")
@@ -922,6 +966,9 @@ class Relay:
                 details={"outcome": "quiet_hours"},
             )
             return False
+        guard = getattr(self, 'scheduled_check_in_guard', None)
+        if guard and (reason := guard()):
+            return self._skip_initiative(reason, 'Scheduled check-in no longer eligible', persist=False)
         # Reserve only once eligibility checks pass, before Codex/remote work.
         # Failed or uncertain attempts remain charged to bound repeated failures.
         if not self.state.record_initiative_check(
@@ -939,6 +986,8 @@ class Relay:
                     correlation_id=latest.id,
                 ),
             )
+        if guard and (reason := guard()):
+            return self._skip_initiative(reason, 'Scheduled check-in expired during preparation', persist=False)
         outbox_id = self._send_user_message(self._limit_reply(check_in))
         self._set_initiative_outcome("check_in_sent")
         self._event(
@@ -1017,8 +1066,9 @@ class Relay:
                 )
             due_at = self.state.get_int("initiative_due_at", 0)
             cooldown_until = self.state.get_int("history_cooldown_until", 0)
+            from .schedule import saved_schedule
             if (
-                self.settings.initiative_enabled
+                self.settings.initiative_enabled and saved_schedule(self.state, self.settings.group_id) is None
                 and due_at
                 and cooldown_until <= int(time.time())
             ):

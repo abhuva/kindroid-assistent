@@ -103,6 +103,7 @@ def _agent_factory(settings: Settings, state: RelayState):
         prompt_path=settings.prompt_path,
         model=settings.codex_model,
         approved_sandbox=settings.approved_sandbox,
+        memory_settings=settings,
     )
 
 

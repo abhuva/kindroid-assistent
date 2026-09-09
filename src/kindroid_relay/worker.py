@@ -53,6 +53,7 @@ class RelayWorker:
                 prompt_path=self.settings.prompt_path,
                 model=self.settings.codex_model,
                 approved_sandbox=self.settings.approved_sandbox,
+                memory_settings=self.settings,
             )
             yield RelayApplication(
                 self.settings,
@@ -135,6 +136,14 @@ class RelayWorker:
                 )
 
     def _recover(self, state: RelayState) -> None:
+        from .experience import ExperienceStore
+        if ExperienceStore(state, self.settings.group_id, self.settings.kindroid_display_name).recover():
+            state.pause('Exploration experience interrupted; inspect result delivery before resuming')
+        from .agency import AgencyStore
+        AgencyStore(state, self.settings.group_id).recover_interrupted()
+        from .exploration_response import ResponseStore
+        if ResponseStore(state, self.settings.group_id, self.settings.kindroid_display_name).recover():
+            state.pause('Exploration follow-up interrupted; inspect delivery before resuming')
         recovered = state.commands.recover_interrupted()
         must_pause = False
         for command in recovered:
@@ -166,6 +175,34 @@ class RelayWorker:
         return WorkerPhase.POLLING
 
     def _dispatch(self, application: RelayApplication, command: CommandRecord) -> dict[str, Any]:
+        if command.command_type == CommandType.SYNC_HISTORY:
+            return application.sync_history(command.id)
+        if command.command_type == CommandType.SET_DISCOVERY:
+            return application.discovery.save(command.payload, command.id)
+        if command.command_type == CommandType.APPROVE_PUBLIC_TOPIC:
+            return application.experiences.store.approve_topic(command.payload['session_id'], command.payload['topic'], command.id)
+        if command.command_type == CommandType.SET_SCHEDULE:
+            from .schedule import DailyScheduler
+            return DailyScheduler(application.state, self.settings).save(command.payload, command.id)
+        if command.command_type == CommandType.SCHEDULED_CHECK_IN:
+            return application.start_scheduled_check_in(command.id)
+        if command.command_type == CommandType.SCHEDULED_EXPLORATION:
+            return application.start_scheduled_exploration(command.id)
+        if command.command_type == CommandType.GARDEN_CORRECT:
+            from .garden import GardenStore
+            return GardenStore(application.state.connection, application.settings.group_id).correct(command.id, command.payload)
+        if command.command_type == CommandType.INTERPRET_EXPLORATION:
+            return application.interpret_exploration(command.id, **command.payload)
+        if command.command_type == CommandType.START_EXPLORATION:
+            return application.start_exploration(command.id)
+        if command.command_type == CommandType.CLOSE_EXPLORATION:
+            from .agency import AgencyStore
+            return AgencyStore(application.state, application.settings.group_id).close(command.id, **command.payload)
+        if command.command_type == CommandType.REVIEW_CANDIDATE:
+            from .agency import AgencyStore
+            return AgencyStore(application.state, application.settings.group_id).revise_candidate(command.id, **command.payload)
+        if command.command_type.value.startswith("memory_"):
+            return application.memory.command(command.command_type.value.removeprefix("memory_"), command.payload, command.id)
         if command.command_type == CommandType.START_CONVERSATION:
             return {"handled": application.start_conversation()}
         if command.command_type == CommandType.TRIGGER_INITIATIVE:
@@ -215,10 +252,15 @@ class RelayWorker:
         try:
             result = self._dispatch(application, command)
         except Exception as exc:
+            memory_failure = (command.command_type.value.startswith("memory_")
+                              or command.command_type in {CommandType.SYNC_HISTORY, CommandType.SET_SCHEDULE, CommandType.SCHEDULED_CHECK_IN,
+                                                         CommandType.SET_DISCOVERY, CommandType.APPROVE_PUBLIC_TOPIC}
+                              or command.command_type in {CommandType.START_EXPLORATION, CommandType.SCHEDULED_EXPLORATION, CommandType.REVIEW_CANDIDATE, CommandType.CLOSE_EXPLORATION, CommandType.INTERPRET_EXPLORATION, CommandType.GARDEN_CORRECT})
             state.commands.transition(
                 command.id,
                 CommandStatus.FAILED,
-                error=f"{exc.__class__.__name__}: {exc}",
+                error="History sync failed; inspect activity and history limits" if command.command_type == CommandType.SYNC_HISTORY else
+                      "Local context operation failed; inspect its source, budget and configuration" if memory_failure else f"{exc.__class__.__name__}: {exc}",
             )
             state.activity.add(
                 "command_failed",
@@ -231,7 +273,12 @@ class RelayWorker:
                 },
                 correlation_id=command.id,
             )
-            logger.exception("Command %s failed", command.id)
+            if command.command_type == CommandType.SYNC_HISTORY:
+                logger.warning("History sync command %s failed", command.id)
+            elif memory_failure:
+                logger.warning("Memory command %s failed", command.id)
+            else:
+                logger.exception("Command %s failed", command.id)
             return
         state.commands.transition(
             command.id,
@@ -262,22 +309,49 @@ class RelayWorker:
                 "Relay worker started",
             )
             self._recover(state)
+            from .curiosity import CuriosityScheduler
+            from .schedule import DailyScheduler, effective_settings
+            daily = DailyScheduler(state, self.settings)
             next_poll_at = 0.0
             try:
                 with self._application(state) as application:
                     while not self.stop_event.is_set():
+                        if isinstance(application, RelayApplication):
+                            application.settings = effective_settings(state, self.settings)
+                            application.relay.settings = application.settings
+                        curiosity = CuriosityScheduler(state, self.settings)
                         state.worker_status.heartbeat()
                         command = state.commands.claim_next()
                         if command is not None:
                             self._run_command(state, application, command)
-                            next_poll_at = min(next_poll_at, time.time())
+                            if command.command_type == CommandType.SYNC_HISTORY:
+                                # This command already pulled history. Do not force an
+                                # immediate second read or conversation cycle afterward.
+                                next_poll_at = max(next_poll_at, time.time() + self.settings.poll_seconds)
+                                self._phase(state, WorkerPhase.PAUSED if state.is_paused() else WorkerPhase.IDLE)
+                            elif (not command.command_type.value.startswith("memory_")
+                                    and command.command_type not in {CommandType.REVIEW_CANDIDATE, CommandType.CLOSE_EXPLORATION, CommandType.GARDEN_CORRECT}):
+                                next_poll_at = min(next_poll_at, time.time())
                             continue
 
+                        if daily.tick() or curiosity.tick():
+                            continue  # the next loop claims its durable command normally
+                        now = time.time()
+                        memory_deadline = now + self.settings.memory_extraction_timeout_seconds
+                        next_initiative = daily.row()['next_due_at'] if daily.configured else state.get_int("initiative_due_at", 0) if self.settings.initiative_enabled else 0
+                        if (not state.is_paused() and memory_deadline < next_poll_at
+                                and (not next_initiative or memory_deadline < next_initiative)
+                                and hasattr(application, "memory")):
+                            try:
+                                application.memory.automatic_tick()
+                            except Exception:
+                                # Optional local memory must not fail or repeat a conversation cycle.
+                                logger.warning("Local memory capture unavailable")
                         now = time.time()
                         cooldown_until = state.get_int("history_cooldown_until", 0)
                         due_at = state.get_int("initiative_due_at", 0)
                         initiative_due = bool(
-                            self.settings.initiative_enabled
+                            not daily.configured and self.settings.initiative_enabled
                             and due_at
                             and now >= due_at
                         )
@@ -378,8 +452,11 @@ class RelayWorker:
                             time.time() + self.settings.worker_heartbeat_seconds,
                             next_poll_at,
                         ]
+                        curiosity_due = curiosity.deadline()
+                        if curiosity_due:
+                            deadlines.append(float(curiosity_due))
                         if (
-                            self.settings.initiative_enabled
+                            not daily.configured and self.settings.initiative_enabled
                             and due_at
                             and cooldown_until <= time.time()
                         ):

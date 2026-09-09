@@ -202,6 +202,18 @@ the browser's local timezone.
 - `POST /api/v1/commands/start-conversation`
 - `POST /api/v1/commands/trigger-initiative`
 - `POST /api/v1/commands/resume`
+- `POST /api/v1/commands/sync-history`: enqueue `sync_history` with only an
+  `idempotency_key`. A worker-owned external read and local reconciliation, not a
+  conversation command. Allowed while paused; no resume, generation, persona
+  change or delivery retry. One active sync at a time; retrying the same key returns
+  the same record. History pagination, spacing, rolling budget and 429 cooldown
+  remain enforced. Interrupted reads are not replayed and alone do not pause the
+  relay. Missing/ambiguous reconciliation stays incomplete, without relaxing links
+  or cursor rules. Result `sync_outcome` distinguishes `synced`, `bootstrapped`,
+  `history_cooldown`, `history_budget`, `history_pending`,
+  `reconciliation_unresolved`, and `history_error`; successful command handling
+  does not itself imply successful synchronization. Only allow-listed outcomes,
+  counts, sync/retry timestamps and paused state are exposed, never exception bodies.
 - `POST /api/v1/settings/initiative-limit`: enqueue `set_initiative_limit` with
   strict integer `limit` (1–1000) and `idempotency_key`; local audited persistence,
   no environment rewrite or relay resume. See [ADR-007](adr/ADR-007-dashboard-initiative-budget.md).
@@ -215,6 +227,13 @@ return HTTP 409 with a safe reason. Missing items return 404. API failures use a
 consistent error object and never return tracebacks to the browser.
 
 ## First user interface
+
+**2026-09-08 message controls:** Messages distinguishes **Reload saved messages**
+(local GET only) from **Sync Kindroid history** (protected durable command).
+Completion or a blocker is shown inline and reloads the local message list. Unknown
+submission outcomes use the shared same-request retry control. Read-only sync does
+not force a follow-up poll; independent scheduled/normal worker activity remains
+enabled unless the operator pauses it. See [operator behavior](../README.md).
 
 The first dashboard is a single responsive page with:
 

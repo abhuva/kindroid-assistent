@@ -10,6 +10,11 @@
   <script src="/static/api-client.js" defer></script>
   <script src="/static/ui-model.js" defer></script>
   <script src="/static/app.js" defer></script>
+  <script src="/static/memory.js" defer></script>
+  <script src="/static/exploration.js" defer></script>
+  <script src="/static/garden.js" defer></script>
+  <script src="/static/schedule.js" defer></script>
+  <script src="/static/discovery.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#controls-heading">Skip to controls</a>
@@ -22,6 +27,13 @@
       <div id="connection" class="badge neutral" role="status">Connecting…</div>
     </header>
 
+    <div class="tabbar" role="tablist" aria-label="Dashboard views">
+      <button id="tab-info" type="button" role="tab" aria-selected="true" aria-controls="view-info" tabindex="0">Info</button>
+      <button id="tab-operations" type="button" role="tab" aria-selected="false" aria-controls="view-operations" tabindex="-1">Operations</button>
+      <button id="tab-schedule" type="button" role="tab" aria-selected="false" aria-controls="view-schedule" tabindex="-1">Schedule</button>
+    </div>
+
+    <div id="view-info" role="tabpanel" aria-labelledby="tab-info" tabindex="0">
     <section class="panel status-panel" aria-labelledby="status-heading">
       <div class="status-summary">
         <h2 id="status-heading" class="sr-only">Relay status</h2>
@@ -31,8 +43,8 @@
       <dl class="status-grid">
         <div><dt>Worker</dt><dd id="worker-phase">—</dd></div>
         <div><dt>Last heartbeat</dt><dd><time id="worker-heartbeat">—</time></dd></div>
-        <div><dt>Next initiative</dt><dd><time id="next-initiative">—</time></dd></div>
-        <div><dt>Last initiative</dt><dd id="last-initiative">—</dd></div>
+        <div><dt>Next scheduled tick</dt><dd><time id="next-initiative">—</time></dd></div>
+        <div><dt>Last check-in</dt><dd id="last-initiative">—</dd></div>
         <div><dt>Schedule</dt><dd id="initiative-schedule">—</dd></div>
         <div><dt>Quiet hours</dt><dd id="quiet-hours">—</dd></div>
         <div><dt>History budget</dt><dd><span id="history-budget">—</span><small id="history-budget-note" class="quota-note"></small></dd></div>
@@ -87,26 +99,6 @@
       </details>
     </section>
 
-    <section class="panel" aria-labelledby="current-heading">
-      <h2 id="current-heading">Current activity</h2>
-      <p id="current-activity">Waiting for status.</p>
-      <p id="current-elapsed" class="muted"></p>
-    </section>
-
-    <section class="panel" aria-labelledby="delivery-heading">
-      <h2 id="delivery-heading">Delivery health</h2>
-      <p id="delivery-status" role="status">Loading delivery status.</p>
-      <p id="delivery-explanation" hidden>Delivery may already have reached Kindroid. Automatic retry is disabled to prevent duplicate messages. Inspect the linked activity and source before resuming.</p>
-      <div id="delivery-list" class="stack"></div>
-    </section>
-
-      <section class="panel" aria-labelledby="approvals-heading">
-        <div class="panel-heading">
-            <h2 id="approvals-heading">Approvals</h2>
-        <label>Status <select id="approval-filter"><option value="pending">Pending</option><option value="">All recent</option><option value="executed">Executed</option><option value="rejected">Rejected</option><option value="failed">Failed</option></select></label>
-        </div>
-        <div id="approval-list" class="stack"></div>
-      </section>
     </div>
 
     <section class="panel activity-panel" aria-labelledby="activity-heading">
@@ -123,8 +115,13 @@
     <section class="panel messages-panel" aria-labelledby="messages-heading">
       <div class="panel-heading">
         <h2 id="messages-heading">Messages</h2>
-        <button id="refresh-messages" type="button" class="text-button">Refresh</button>
+        <button id="refresh-messages" type="button" class="text-button">Reload saved messages</button>
       </div>
+      <div class="controls">
+        <button id="sync-history" type="button" class="secondary" disabled aria-describedby="history-sync-note">Sync Kindroid history</button>
+        <span id="history-sync-status" class="control-status" role="status"></span>
+      </div>
+      <p id="history-sync-note" class="muted">Pull newer history from Kindroid. Uses the history-read allowance; API cooldowns still apply. Works while paused without resuming or requesting replies. If running, normal automatic processing continues later.</p>
       <div id="message-list" class="messages" tabindex="0" role="region" aria-label="Group messages"></div>
       <div class="message-pagination">
       <button id="older-messages" type="button" class="secondary" disabled>Load older messages</button>
@@ -132,6 +129,164 @@
       </div>
     </section>
     </div>
+    </div>
+
+    <div id="view-schedule" role="tabpanel" aria-labelledby="tab-schedule" tabindex="0" hidden>
+      <section class="panel schedule-panel" aria-labelledby="schedule-heading">
+        <div class="panel-heading"><h2 id="schedule-heading">Daily schedule</h2><button id="schedule-refresh" type="button">Refresh status</button></div>
+        <p id="schedule-state" role="status">Loading schedule.</p>
+        <form id="schedule-form">
+          <fieldset id="schedule-fields" disabled>
+            <legend class="sr-only">Schedule settings</legend>
+            <label class="schedule-enable"><input id="schedule-enabled" type="checkbox"> Enable scheduled activities</label>
+            <div class="schedule-interval" role="group" aria-label="Tick interval">
+              <span>Tick every</span>
+              <button type="button" data-tick-minutes="15" aria-pressed="false">15 mins</button>
+              <button type="button" data-tick-minutes="30" aria-pressed="false">30 mins</button>
+              <button type="button" data-tick-minutes="60" aria-pressed="true">60 mins</button>
+            </div>
+            <p class="muted">Ticks follow the relay computer's local clock. Dead hours are excluded before percentages are allocated.</p>
+            <div class="schedule-allocation">
+              <label for="schedule-check-in">Check-ins (%)<input id="schedule-check-in" type="number" min="0" max="100" step="1" required></label>
+              <input id="schedule-balance" aria-label="Check-in share" type="range" min="0" max="100" step="1">
+              <label for="schedule-exploration">Exploration invitations (%)<input id="schedule-exploration" type="number" min="0" max="100" step="1" required></label>
+            </div>
+            <p id="schedule-counts" class="schedule-counts" aria-live="polite"></p>
+            <div class="schedule-legend"><span class="check-in-key">C · Check-in</span><span class="exploration-key">E · Exploration invitation</span><span>— · Dead time</span></div>
+            <p id="schedule-graph-help" class="muted">Each column shows an hour and its ticks. Select it to toggle dead time for the whole hour. Use Tab and Space with the keyboard.</p>
+            <div id="schedule-timeline" class="schedule-timeline" role="group" aria-label="24-hour schedule preview" aria-describedby="schedule-graph-help"></div>
+            <p id="schedule-slot-detail" class="muted" aria-live="polite">Select or focus an hour for details.</p>
+            <div class="schedule-dead-editor">
+              <label for="schedule-dead-start">Dead time starts<input id="schedule-dead-start" type="time" step="3600" value="22:00" required></label>
+              <label for="schedule-dead-end">Ends (next day if earlier)<input id="schedule-dead-end" type="time" step="3600" value="06:00" required></label>
+              <button id="schedule-add-dead" type="button">Add dead time</button>
+              <button id="schedule-clear-dead" type="button" class="secondary">Clear dead time</button>
+            </div>
+            <p class="muted">Whole-hour boundaries. Matching start and end means the full day. Add more than one block, or toggle individual hours above.</p>
+            <ul id="schedule-dead-blocks" class="schedule-dead-blocks" aria-label="Dead-time blocks"></ul>
+            <details class="schedule-limits" open>
+              <summary>Rolling 24-hour limits</summary>
+              <div class="schedule-limit-grid">
+                <label for="schedule-check-in-limit">Check-in attempts<input id="schedule-check-in-limit" type="number" min="1" max="1000" step="1" required></label>
+                <label for="schedule-exploration-limit">All exploration invitations<input id="schedule-exploration-limit" type="number" min="1" max="1000" step="1" required></label>
+                <label for="schedule-attempt-limit">Scheduled exploration attempts<input id="schedule-attempt-limit" type="number" min="1" max="1000" step="1" required></label>
+                <label for="schedule-interpretation-limit">Reserved interpretation calls<input id="schedule-interpretation-limit" type="number" min="1" max="1000" step="1" required></label>
+              </div>
+              <p class="muted">Limits can reduce actual activity below the allocation. Manual invitations share the exploration limit. Automatic interpretation reserves two calls per invitation. Existing usage is retained when limits change.</p>
+            </details>
+          </fieldset>
+          <p id="schedule-warnings" class="warning" aria-live="polite"></p>
+          <p id="schedule-error" class="error" role="alert"></p>
+          <div class="controls"><button id="schedule-save" type="submit" disabled>Save schedule</button><button id="schedule-discard" type="button" class="secondary" disabled>Discard edits</button></div>
+          <p id="schedule-command" role="status"></p>
+          <p class="muted">Saving replaces the old check-in and curiosity timing and quiet hours for future ticks. Dead time stops new scheduled activities; ongoing conversations and manual controls remain available. Blocked or missed ticks are skipped without catch-up.</p>
+        </form>
+      </section>
+      <section class="panel" aria-labelledby="schedule-history-heading">
+        <h2 id="schedule-history-heading">Recent tick outcomes</h2>
+        <ol id="schedule-history" class="stack"></ol>
+      </section>
+      <details id="discovery-panel" class="panel">
+        <summary>Discovery sources &amp; follow-through</summary>
+        <p>Choose what feeds exploration invitations. Sources rotate equally; recent items are suppressed. Unavailable sources do not block conversation. Tick percentages above stay unchanged.</p>
+        <button id="discovery-refresh" type="button" class="secondary">Refresh discovery status</button>
+        <form id="discovery-form">
+          <fieldset id="discovery-fields" disabled>
+            <legend>Discovery settings</legend>
+            <div class="controls">
+              <label><input type="checkbox" name="discovery-source" value="catalog"> Unfamiliar and adjacent topics</label>
+              <label><input type="checkbox" name="discovery-source" value="memory"> Memory and unfinished questions</label>
+              <label><input type="checkbox" name="discovery-source" value="creative"> Creative possibilities</label>
+              <label><input type="checkbox" name="discovery-source" value="interests"> Previously chosen interests</label>
+              <label><input type="checkbox" name="discovery-source" value="world_news"> World news (BBC RSS)</label>
+              <label><input type="checkbox" name="discovery-source" value="local_news"> Local news (Google News RSS; experimental)</label>
+            </div>
+            <label for="discovery-area">Public city or region<input id="discovery-area" maxlength="80" placeholder="No private address"></label>
+            <p class="muted">Enabling news permits public feed reads, at most once per source per hour. Local news sends the place name to Google News; English coverage may be incomplete. Links and publication dates are retained.</p>
+            <label><input id="discovery-follow" type="checkbox"> Allow bounded research and an optional reflection after a new invitation's selected topic</label>
+            <label for="discovery-limit">Research attempts per rolling 24 hours<input id="discovery-limit" type="number" min="1" max="20" step="1" required></label>
+            <p class="muted">One Wikipedia lookup (up to three short reference excerpts), one result message, one optional reflection. No unrestricted agent, publishing, accounts, or identity changes. Private-memory topics and reported alternatives require a separately approved public search phrase. Existing invitations are not backfilled. Requires exploration and response interpretation enabled.</p>
+            <button id="discovery-save" type="submit">Save discovery settings</button>
+          </fieldset>
+        </form>
+        <p id="discovery-status" role="status">Open to load discovery settings.</p>
+        <p id="discovery-error" role="alert"></p>
+        <button id="discovery-retry" type="button" class="secondary" hidden>Retry same request</button>
+        <div id="discovery-feeds"></div>
+        <h3>Recent experiences</h3>
+        <p>Results and reflections are observations, not permanent preferences. Failed/review-only experiences do not block future invitations. Delivery uncertainty still requires inspection.</p>
+        <div id="discovery-experiences" class="stack"></div>
+      </details>
+    </div>
+
+    <div id="view-operations" role="tabpanel" aria-labelledby="tab-operations" tabindex="0" hidden>
+    <div class="operations-overview">
+    <section class="panel" aria-labelledby="current-heading">
+      <h2 id="current-heading">Current activity</h2>
+      <p id="current-activity">Waiting for status.</p>
+      <p id="current-elapsed" class="muted"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="delivery-heading">
+      <h2 id="delivery-heading">Delivery health</h2>
+      <p id="delivery-status" role="status">Loading delivery status.</p>
+      <p id="delivery-explanation" hidden>Delivery may already have reached Kindroid. Automatic retry is disabled to prevent duplicate messages. Inspect the linked activity and source before resuming.</p>
+      <div id="delivery-list" class="stack"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="approvals-heading">
+      <div class="panel-heading">
+        <h2 id="approvals-heading">Approvals</h2>
+        <label>Status <select id="approval-filter"><option value="pending">Pending</option><option value="">All recent</option><option value="executed">Executed</option><option value="rejected">Rejected</option><option value="failed">Failed</option></select></label>
+      </div>
+      <div id="approval-list" class="stack"></div>
+    </section>
+    </div>
+
+    <details class="panel diagnostics" id="memory-panel">
+      <summary>Agent context memory</summary>
+      <p class="muted">When enabled, semantic capture creates observations automatically from stored chat. Manual saving is optional. This is Codex's context, not Hannah's identity or permissions; uncertain name matches need review.</p>
+      <form id="memory-search-form" class="diagnostic-toolbar">
+        <label for="memory-query">Search observations</label>
+        <input id="memory-query" maxlength="500" type="search">
+        <button type="submit">Search / refresh</button>
+        <button id="memory-extract" type="button" class="secondary">Capture next 3 local messages</button>
+        <button id="memory-reindex" type="button" class="secondary">Index next 10</button>
+      </form>
+      <p id="memory-status" class="muted" role="status"></p>
+      <div id="memory-results"></div>
+    </details>
+
+    <details id="exploration-panel" class="panel">
+      <summary>Exploration / Passing candidates</summary>
+      <p class="muted">Manual invitation, source-backed response interpretation, and bounded acknowledgement. At most one optional clarification; no research tools or identity changes.</p>
+      <div class="diagnostic-toolbar">
+        <button id="exploration-start" type="button" disabled>Start exploration</button>
+        <button id="exploration-refresh" type="button" class="secondary">Refresh exploration</button>
+      </div>
+      <p id="exploration-status" class="muted" role="status">Not loaded.</p>
+      <p id="curiosity-status" role="status">Scheduled curiosity not loaded.</p>
+      <p id="curiosity-budget" class="muted"></p>
+      <details><summary>Recent scheduled exploration slots</summary><ol id="curiosity-history" class="stack"></ol></details>
+      <p id="exploration-command" role="status"></p>
+      <p id="exploration-error" class="error" role="alert"></p>
+      <div id="exploration-sessions" role="region" tabindex="0" aria-label="Recent exploration sessions"></div>
+      <div id="exploration-candidates" role="region" tabindex="0" aria-label="Passing candidates"></div>
+    </details>
+
+    <details id="garden-panel" class="panel">
+      <summary>Garden / Roots, Growing, Passing</summary>
+      <p class="muted">Roots are protected foundations; Growing is chosen ongoing interest; Passing is provisional seeds. No automatic promotion, identity changes, or tool execution. Initial Roots require a separate, reviewed manual bootstrap.</p>
+      <div class="filters">
+        <label>Layer <select id="garden-layer"><option value="">All layers</option><option value="roots">Roots / foundations</option><option value="growing">Growing / nurtured interests</option><option value="passing">Passing / seeds</option></select></label>
+        <label>Status <select id="garden-filter"><option value="">All statuses</option><option value="active">Active</option><option value="paused">Paused</option><option value="archived">Archived</option><option value="superseded">Superseded</option></select></label>
+        <button id="garden-refresh" type="button" class="secondary">Refresh garden</button>
+      </div>
+      <p id="garden-status" role="status">Not loaded.</p>
+      <p id="garden-error" role="alert" class="error"></p>
+      <div id="garden-items" role="region" aria-label="Garden items" tabindex="0"></div>
+      <button id="garden-more" type="button" class="secondary" hidden>Load more items</button>
+    </details>
 
     <details class="panel diagnostics">
       <summary>Diagnostic log</summary>
@@ -142,7 +297,91 @@
       <pre id="log-tail" tabindex="0">Log not loaded.</pre>
       <p id="log-note" class="muted"></p>
     </details>
+    </div>
   </main>
+
+  <dialog id="garden-dialog" aria-labelledby="garden-detail-title">
+    <h2 id="garden-detail-title">Garden item</h2>
+    <p id="garden-detail-meta" class="muted"></p>
+    <h3>Immutable versions</h3>
+    <ol id="garden-versions" class="garden-history"></ol>
+    <button id="garden-versions-more" type="button" class="secondary" hidden>More versions</button>
+    <h3>Source-linked responses</h3>
+    <ul id="garden-reactions" class="garden-history"></ul>
+    <details><summary>Original exploration trail (session context, not all events are this seed's choices)</summary>
+      <ol id="garden-trail" class="garden-history"></ol>
+      <button id="garden-trail-more" type="button" class="secondary" hidden>More trail events</button>
+    </details>
+    <h3>Connections / conflicts</h3><div id="garden-relations"></div>
+    <h3>Projects / attention history</h3><div id="garden-projects"></div>
+    <form id="garden-correction-form">
+      <h3>Administrative annotation</h3>
+      <p class="muted">Stored as Marc's new version, never Hannah's choice. Leaves original content, evidence, ownership, layer and status unchanged. To correct source observations, use Agent context memory.</p>
+      <label for="garden-annotation">Annotation (empty clears the current annotation, not its history)</label>
+      <textarea id="garden-annotation" rows="3" maxlength="1000"></textarea>
+      <label for="garden-correction-reason">Reason (required)</label>
+      <input id="garden-correction-reason" maxlength="500" required>
+      <button id="garden-annotate" type="submit">Queue administrative annotation</button>
+      <p id="garden-save-status" role="status"></p>
+    </form>
+    <p id="garden-detail-error" class="error" role="alert"></p>
+    <button id="garden-close" type="button" class="secondary" autofocus>Close</button>
+  </dialog>
+
+  <dialog id="exploration-dialog" aria-labelledby="exploration-dialog-title">
+    <form id="exploration-confirm-form">
+      <h2 id="exploration-dialog-title">Confirm exploration</h2>
+      <p id="exploration-confirm-scope"></p>
+      <label for="exploration-reason">Reason (required for archive / restore)</label>
+      <input id="exploration-reason" maxlength="500">
+      <p id="exploration-dialog-error" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="exploration-cancel" type="button" class="secondary">Cancel</button>
+        <button id="exploration-confirm" type="submit">Queue command</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="memory-dialog" aria-labelledby="memory-dialog-title">
+    <form id="memory-edit-form">
+      <h2 id="memory-dialog-title">Save source observation</h2>
+      <p id="memory-source-note" class="muted"></p>
+      <label for="memory-quote">Exact passage (do not rewrite)</label>
+      <textarea id="memory-quote" maxlength="2000" rows="4" required></textarea>
+      <label for="memory-evidence-for">Optional existing observation ID: attach this as additional evidence instead of creating an observation</label>
+      <input id="memory-evidence-for" maxlength="128">
+      <label for="memory-kind">Observation type</label>
+      <select id="memory-kind"><option value="observation">Observation</option><option value="reported_root">Reported Root (not canonical)</option><option value="interest">Interest</option><option value="question">Question</option><option value="commitment">Commitment (not authority)</option><option value="experience">Experience</option><option value="offer">Offer</option><option value="outcome">Outcome</option></select>
+      <label for="memory-interpretation">Agent/operator interpretation (optional, separate from quote)</label>
+      <textarea id="memory-interpretation" maxlength="1000" rows="2"></textarea>
+      <label for="memory-temporal">Temporal applicability (optional)</label>
+      <input id="memory-temporal" maxlength="200">
+      <label for="memory-entity">New entity label (optional; separate candidate, not an identity match)</label>
+      <input id="memory-entity" maxlength="100">
+      <label for="memory-entity-kind">Entity type</label>
+      <select id="memory-entity-kind"><option value="topic">Topic</option><option value="person">Person</option><option value="place">Place</option><option value="event">Event</option></select>
+      <label for="memory-aliases">Aliases, comma-separated (up to 5)</label>
+      <input id="memory-aliases" maxlength="500">
+      <label for="memory-record-status">Retrieval status (active does not mean true)</label>
+      <select id="memory-record-status"><option value="active">Active</option><option value="disputed">Disputed</option><option value="superseded">Superseded</option><option value="retracted">Retracted</option></select>
+      <label for="memory-reason">Reason for correction, additional evidence, or link review</label>
+      <input id="memory-reason" maxlength="500">
+      <label for="memory-link-id">Existing entity ID to link/unlink (review identity first)</label>
+      <input id="memory-link-id" maxlength="128">
+      <label for="memory-link-relation">Connection</label>
+      <select id="memory-link-relation"><option value="mentions">Mentions</option><option value="about">About</option><option value="experienced_at">Experienced at</option><option value="interested_in">Interested in</option></select>
+      <pre id="memory-detail"></pre>
+      <div id="memory-source-links"></div>
+      <div id="memory-match-review"></div>
+      <p id="memory-error" role="alert" class="error"></p>
+      <div class="dialog-actions">
+        <button id="memory-cancel" type="button" class="secondary">Close</button>
+        <button id="memory-link" type="button" class="secondary">Link entity</button>
+        <button id="memory-unlink" type="button" class="secondary">Unlink entity</button>
+        <button id="memory-submit" type="submit">Queue save</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="approval-dialog" aria-labelledby="approval-dialog-title">
     <form method="dialog">

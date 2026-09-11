@@ -13,8 +13,6 @@
   <script src="/static/memory.js" defer></script>
   <script src="/static/exploration.js" defer></script>
   <script src="/static/garden.js" defer></script>
-  <script src="/static/schedule.js" defer></script>
-  <script src="/static/discovery.js" defer></script>
   <script src="/static/encounters.js" defer></script>
 </head>
 <body>
@@ -32,7 +30,7 @@
       <button id="tab-operations" type="button" role="tab" aria-selected="false" aria-controls="view-operations" tabindex="-1">Operations</button>
       <button id="tab-schedule" type="button" role="tab" aria-selected="false" aria-controls="view-schedule" tabindex="-1">Schedule</button>
     </div>
-    <nav aria-label="Conversation rooms">{{ROOM_LINKS}}</nav>
+    <div class="room-switcher" role="group" aria-label="Conversation rooms">{{ROOM_LINKS}}</div>
     <section class="panel" aria-labelledby="encounter-heading">
       <h2 id="encounter-heading">{{ROOM_LABEL}} · Next encounter</h2>
       <p id="encounter-status" role="status">Loading encounter preferences…</p>
@@ -47,13 +45,6 @@
         <p id="session-recovery-note">Recovery affects the relay session, not the Kindroid group.</p>
         <button type="button" id="session-recover" class="danger" aria-describedby="session-recovery-note" disabled>Recover interrupted relay session</button>
       </div>
-      <fieldset id="shared-schedule-controls" hidden>
-        <legend>Daily companion session</legend>
-        <label for="shared-enabled"><input id="shared-enabled" type="checkbox"> Enable daily session</label>
-        <label for="shared-time">Start time (relay host local time)</label>
-        <input id="shared-time" type="time" value="18:00">
-        <button type="button" id="shared-save">Save daily session</button>
-      </fieldset>
       <p id="encounter-result" role="status"></p>
       <button type="button" id="encounter-retry" hidden>Retry same encounter request</button>
     </section>
@@ -68,11 +59,11 @@
       <dl class="status-grid">
         <div><dt>Worker</dt><dd id="worker-phase">—</dd></div>
         <div><dt>Last heartbeat</dt><dd><time id="worker-heartbeat">—</time></dd></div>
-        <div><dt>Next scheduled tick</dt><dd><time id="next-initiative">—</time></dd></div>
+        <div><dt>Next check-in</dt><dd><time id="next-initiative">—</time></dd></div>
         <div><dt>Last check-in</dt><dd id="last-initiative">—</dd></div>
         <div><dt>Schedule</dt><dd id="initiative-schedule">—</dd></div>
         <div><dt>Quiet hours</dt><dd id="quiet-hours">—</dd></div>
-        <div><dt>History budget</dt><dd><span id="history-budget">—</span><small id="history-budget-note" class="quota-note"></small></dd></div>
+        <div><dt>History reads (local)</dt><dd><span id="history-budget">—</span><small id="history-budget-note" class="quota-note"></small></dd></div>
         <div><dt>History API</dt><dd id="history-api">—</dd></div>
         <div><dt>Last 429</dt><dd id="last-429">—</dd></div>
         <div><dt>Turns</dt><dd id="turn-count">—</dd></div>
@@ -128,6 +119,7 @@
 
     <section class="panel activity-panel" aria-labelledby="activity-heading">
       <div class="panel-heading"><h2 id="activity-heading">Activity</h2></div>
+      <label>View <select id="activity-view"><option value="grouped">Sessions and outcomes</option><option value="events">All events</option></select></label>
       <div class="filters">
         <label>Severity <select id="activity-severity"><option value="">All severities</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option></select></label>
         <label>Kind <select id="activity-kind"><option value="">All kinds</option></select></label>
@@ -146,7 +138,7 @@
         <button id="sync-history" type="button" class="secondary" disabled aria-describedby="history-sync-note">Sync Kindroid history</button>
         <span id="history-sync-status" class="control-status" role="status"></span>
       </div>
-      <p id="history-sync-note" class="muted">Pull newer history from Kindroid. Uses the history-read allowance; API cooldowns still apply. Works while paused without resuming or requesting replies. If running, normal automatic processing continues later.</p>
+      <p id="history-sync-note" class="muted">Background chat monitoring is off. Each startup syncs history once per room, respecting quiet hours and provider cooldowns. Sync imports history without starting a conversation. To respond to new messages in a private room, use Trigger check-in; Start conversation opens a fresh exchange. Active sessions and scheduled check-ins still sync when needed. Local usage only warns; provider cooldowns still apply. An actual history rate-limit rejection fails the session and pauses the room.</p>
       <div id="message-list" class="messages" tabindex="0" role="region" aria-label="Group messages"></div>
       <div class="message-pagination">
       <button id="older-messages" type="button" class="secondary" disabled>Load older messages</button>
@@ -157,91 +149,15 @@
     </div>
 
     <div id="view-schedule" role="tabpanel" aria-labelledby="tab-schedule" tabindex="0" hidden>
-      <section class="panel schedule-panel" aria-labelledby="schedule-heading">
-        <div class="panel-heading"><h2 id="schedule-heading">Daily schedule</h2><button id="schedule-refresh" type="button">Refresh status</button></div>
-        <p id="schedule-state" role="status">Loading schedule.</p>
-        <form id="schedule-form">
-          <fieldset id="schedule-fields" disabled>
-            <legend class="sr-only">Schedule settings</legend>
-            <label class="schedule-enable"><input id="schedule-enabled" type="checkbox"> Enable scheduled activities</label>
-            <div class="schedule-interval" role="group" aria-label="Tick interval">
-              <span>Tick every</span>
-              <button type="button" data-tick-minutes="15" aria-pressed="false">15 mins</button>
-              <button type="button" data-tick-minutes="30" aria-pressed="false">30 mins</button>
-              <button type="button" data-tick-minutes="60" aria-pressed="true">60 mins</button>
-            </div>
-            <p class="muted">Ticks follow the relay computer's local clock. Dead hours are excluded before percentages are allocated.</p>
-            <div class="schedule-allocation">
-              <label for="schedule-check-in">Check-ins (%)<input id="schedule-check-in" type="number" min="0" max="100" step="1" required></label>
-              <input id="schedule-balance" aria-label="Check-in share" type="range" min="0" max="100" step="1">
-              <label for="schedule-exploration">Exploration invitations (%)<input id="schedule-exploration" type="number" min="0" max="100" step="1" required></label>
-            </div>
-            <p id="schedule-counts" class="schedule-counts" aria-live="polite"></p>
-            <div class="schedule-legend"><span class="check-in-key">C · Check-in</span><span class="exploration-key">E · Exploration invitation</span><span>— · Dead time</span></div>
-            <p id="schedule-graph-help" class="muted">Each column shows an hour and its ticks. Select it to toggle dead time for the whole hour. Use Tab and Space with the keyboard.</p>
-            <div id="schedule-timeline" class="schedule-timeline" role="group" aria-label="24-hour schedule preview" aria-describedby="schedule-graph-help"></div>
-            <p id="schedule-slot-detail" class="muted" aria-live="polite">Select or focus an hour for details.</p>
-            <div class="schedule-dead-editor">
-              <label for="schedule-dead-start">Dead time starts<input id="schedule-dead-start" type="time" step="3600" value="22:00" required></label>
-              <label for="schedule-dead-end">Ends (next day if earlier)<input id="schedule-dead-end" type="time" step="3600" value="06:00" required></label>
-              <button id="schedule-add-dead" type="button">Add dead time</button>
-              <button id="schedule-clear-dead" type="button" class="secondary">Clear dead time</button>
-            </div>
-            <p class="muted">Whole-hour boundaries. Matching start and end means the full day. Add more than one block, or toggle individual hours above.</p>
-            <ul id="schedule-dead-blocks" class="schedule-dead-blocks" aria-label="Dead-time blocks"></ul>
-            <details class="schedule-limits" open>
-              <summary>Rolling 24-hour limits</summary>
-              <div class="schedule-limit-grid">
-                <label for="schedule-check-in-limit">Check-in attempts<input id="schedule-check-in-limit" type="number" min="1" max="1000" step="1" required></label>
-                <label for="schedule-exploration-limit">All exploration invitations<input id="schedule-exploration-limit" type="number" min="1" max="1000" step="1" required></label>
-                <label for="schedule-attempt-limit">Scheduled exploration attempts<input id="schedule-attempt-limit" type="number" min="1" max="1000" step="1" required></label>
-                <label for="schedule-interpretation-limit">Reserved interpretation calls<input id="schedule-interpretation-limit" type="number" min="1" max="1000" step="1" required></label>
-              </div>
-              <p class="muted">Limits can reduce actual activity below the allocation. Manual invitations share the exploration limit. Automatic interpretation reserves two calls per invitation. Existing usage is retained when limits change.</p>
-            </details>
-          </fieldset>
-          <p id="schedule-warnings" class="warning" aria-live="polite"></p>
-          <p id="schedule-error" class="error" role="alert"></p>
-          <div class="controls"><button id="schedule-save" type="submit" disabled>Save schedule</button><button id="schedule-discard" type="button" class="secondary" disabled>Discard edits</button></div>
-          <p id="schedule-command" role="status"></p>
-          <p class="muted">Saving replaces the old check-in and curiosity timing and quiet hours for future ticks. Dead time stops new scheduled activities; ongoing conversations and manual controls remain available. Blocked or missed ticks are skipped without catch-up.</p>
-        </form>
+      <section class="panel" aria-labelledby="quiet-heading">
+        <h2 id="quiet-heading">Companion quiet hours</h2>
+        <p class="muted">Uses the relay computer's local time. Each companion's hours apply in every room they join. Shared conversations wait while either companion is resting. A turn already in progress may finish.</p>
+        <p id="quiet-status" role="status"></p>
+        <div id="quiet-controls" class="quiet-controls"></div>
+        <p>Missing timing is retried after six hours, moved to the next open time. A missed appointment prompts a check-in offering now or rescheduling.</p>
+        <p id="quiet-result" role="status"></p>
       </section>
-      <section class="panel" aria-labelledby="schedule-history-heading">
-        <h2 id="schedule-history-heading">Recent tick outcomes</h2>
-        <ol id="schedule-history" class="stack"></ol>
-      </section>
-      <details id="discovery-panel" class="panel">
-        <summary>Discovery sources &amp; follow-through</summary>
-        <p>Choose what feeds exploration invitations. Sources rotate equally; recent items are suppressed. Unavailable sources do not block conversation. Tick percentages above stay unchanged.</p>
-        <button id="discovery-refresh" type="button" class="secondary">Refresh discovery status</button>
-        <form id="discovery-form">
-          <fieldset id="discovery-fields" disabled>
-            <legend>Discovery settings</legend>
-            <div class="controls">
-              <label><input type="checkbox" name="discovery-source" value="catalog"> Unfamiliar and adjacent topics</label>
-              <label><input type="checkbox" name="discovery-source" value="memory"> Memory and unfinished questions</label>
-              <label><input type="checkbox" name="discovery-source" value="creative"> Creative possibilities</label>
-              <label><input type="checkbox" name="discovery-source" value="interests"> Previously chosen interests</label>
-              <label><input type="checkbox" name="discovery-source" value="world_news"> World news (BBC RSS)</label>
-              <label><input type="checkbox" name="discovery-source" value="local_news"> Local news (Google News RSS; experimental)</label>
-            </div>
-            <label for="discovery-area">Public city or region<input id="discovery-area" maxlength="80" placeholder="No private address"></label>
-            <p class="muted">Enabling news permits public feed reads, at most once per source per hour. Local news sends the place name to Google News; English coverage may be incomplete. Links and publication dates are retained.</p>
-            <label><input id="discovery-follow" type="checkbox"> Allow bounded research and an optional reflection after a new invitation's selected topic</label>
-            <label for="discovery-limit">Research attempts per rolling 24 hours<input id="discovery-limit" type="number" min="1" max="20" step="1" required></label>
-            <p class="muted">One Wikipedia lookup (up to three short reference excerpts), one result message, one optional reflection. No unrestricted agent, publishing, accounts, or identity changes. Private-memory topics and reported alternatives require a separately approved public search phrase. Existing invitations are not backfilled. Requires exploration and response interpretation enabled.</p>
-            <button id="discovery-save" type="submit">Save discovery settings</button>
-          </fieldset>
-        </form>
-        <p id="discovery-status" role="status">Open to load discovery settings.</p>
-        <p id="discovery-error" role="alert"></p>
-        <button id="discovery-retry" type="button" class="secondary" hidden>Retry same request</button>
-        <div id="discovery-feeds"></div>
-        <h3>Recent experiences</h3>
-        <p>Results and reflections are observations, not permanent preferences. Failed/review-only experiences do not block future invitations. Delivery uncertainty still requires inspection.</p>
-        <div id="discovery-experiences" class="stack"></div>
-      </details>
+
     </div>
 
     <div id="view-operations" role="tabpanel" aria-labelledby="tab-operations" tabindex="0" hidden>
@@ -283,10 +199,10 @@
     </details>
 
     <details id="exploration-panel" class="panel">
-      <summary>Exploration / Passing candidates</summary>
-      <p class="muted">Manual invitation, source-backed response interpretation, and bounded acknowledgement. At most one optional clarification; no research tools or identity changes.</p>
+      <summary>Past exploration / Passing candidates</summary>
+      <p class="muted">Invitations and automatic follow-ups are retired. Existing observations remain available for review; uncertain deliveries still need inspection.</p>
       <div class="diagnostic-toolbar">
-        <button id="exploration-start" type="button" disabled>Start exploration</button>
+        <button id="exploration-start" type="button" hidden disabled>Start exploration</button>
         <button id="exploration-refresh" type="button" class="secondary">Refresh exploration</button>
       </div>
       <p id="exploration-status" class="muted" role="status">Not loaded.</p>

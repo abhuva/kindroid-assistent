@@ -3,6 +3,10 @@
 **Status:** Accepted | **Date:** 2026-09-06
 **Participants:** Marc, Codex
 
+**Status update, 2026-09-11:** Scheduling decision superseded by
+[ADR-025](ADR-025-kin-driven-check-ins-without-invitations.md). No new exploration
+invitations or automatic follow-ups run; historical observations remain stored.
+
 **2026-09-07 amendment:** [ADR-016](ADR-016-shared-daily-schedule.md) supersedes
 independent timing and restart-only schedule settings after the first local daily
 schedule save. This ADR remains the legacy behavior until then; delivery,

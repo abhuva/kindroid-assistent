@@ -6,7 +6,60 @@ disposable Kindroid group and Pi acceptance remain separate.
 See [the task checklist](multi-room-implementation-plan.md) and
 [ADR-020](adr/ADR-020-room-sessions-and-chosen-encounters.md).
 
-## Enable participant timing for Hannah first
+## Kin-driven scheduling in every room (current)
+
+All private and shared rooms use Kin-chosen timing; no opt-in is required.
+Legacy `RELAY_PARTICIPANT_SCHEDULING=false`, room-level opt-outs, daily allocations
+and shared `daily_time` values cannot restore old scheduling. The policy is global,
+but each room keeps its own next time and each companion keeps their own quiet hours.
+
+Exploration invitations and automatic follow-ups are retired, including manual
+invitation commands. Ordinary conversation may follow the companions' interests.
+Historical exploration records remain under Operations for review/closure, without
+new interpretation or research. Safe finished/never-sent sessions close locally;
+unresolved delivery remains visible for inspection. No evidence is deleted.
+
+Private conversations ask once for the next check-in before closing. Shared-room
+attention checks can save either companion's explicit source-linked choice in the
+current session without extending a goodbye. Missing/invalid timing uses the
+six-hour fallback. A new room without a choice also gets that durable fallback;
+no immediate message is sent merely by loading the new policy.
+
+An appointment missed by over an hour gets a recovery check-in offering now or
+another time, including shared-room appointments. Explicit no-follow-up suppresses
+automatic retries. Rest windows move fallback work to the next open minute.
+Pause, uncertain effects, provider history limits and check-in allowances still apply.
+
+Background monitoring is off for every room. Each room syncs history once on
+startup/restart, without starting a conversation. Quiet hours and existing server
+cooldown defer that one attempt; failure is reported without an idle retry loop.
+Paused rooms remain paused. Afterward idle workers only check local schedules and
+commands, without fetching Kindroid history. Later app-side
+changes appear on the next explicit sync/start or scheduled/active-session context
+read. **Sync history** imports without starting a conversation. For a private-room
+response, use **Trigger check-in**; **Start conversation** requires no pending reply
+and opens a fresh exchange. Scheduled check-ins and safe active continuation remain
+enabled. The first check-in can bootstrap its context and proceed without an idle
+read first. See [ADR-027](adr/ADR-027-no-passive-chat-monitoring.md).
+
+The full Daily Schedule panel, shared daily-start editor and Discovery settings
+are removed. **Schedule** retains **Companion quiet hours**. **Next encounter**
+controls are available in every room; **Info → Check-in budget** retains the
+rolling limit. Old daily enable/dead-hour controls no longer block starts.
+`RELAY_INITIATIVE_ENABLED=false` still disables automatic check-ins.
+
+Pause, wait for current work, safely restart the development host and reload the
+page. Queued legacy ticks/invitations complete as retired without sending; in-flight
+or uncertain effects are never retried. Preserve the database; schema remains 13.
+See [ADR-025](adr/ADR-025-kin-driven-check-ins-without-invitations.md).
+
+## Historical rollout notes (superseded scheduling)
+
+The original rollout below records earlier behaviour. Its opt-in, invitation,
+daily-start and room dead-time descriptions are superseded by the current policy
+above. Isolation, explicit recovery and authority safeguards still apply.
+
+### Enable participant timing for Hannah first (historical)
 
 Set `RELAY_PARTICIPANT_SCHEDULING=true` locally and restart. Existing configuration
 remains valid; this permission defaults to false. Codex asks when the participant
@@ -26,19 +79,43 @@ source observations; the closing timing question provides the scheduling choice.
 
 Times must be in the future, between one minute and thirty days for relative
 requests, and within local enabled/quiet-hour/dead-time rules. Relative times use
-the source message timestamp. Unclear or invalid choices require clarification;
+the source message timestamp. Unclear or invalid choices receive a system retry;
 the deterministic receipt is added only after storage succeeds. Scheduling remains
 a room-specific permission, never authorization for files, accounts or external
 actions. Role-only identity needs confirmed generation linkage; conflicting IDs
 cannot change a schedule.
 
-Until the first explicit choice, existing configured encounter timing remains in
-use. Once a choice governs the room, consumed, declined or missed choices do not
-restore old timers. A due request can wait up to one hour for local gates; after
-that it is missed without a catch-up burst. Started attempts remain spent even if
-delivery fails. The dashboard shows the source, time, actor and status. Set a new
-time to override it, or select **No automatic next encounter**. Disabling the saved
-schedule or startup initiative permission still prevents automatic starts.
+Until the first encounter/choice, existing configured timing remains in use.
+An appointment over an hour late becomes a missed encounter with one pending
+recovery check-in: it explains that the relay missed it and offers now or another
+time. Missing or unusable timing gets a system retry after six hours, shifted to
+the next open minute. Starting an encounter saves a fallback before external work
+so a declined turn cannot leave it unscheduled; a new participant choice replaces
+that fallback. Explicit **No automatic next encounter** prevents retries.
+
+Retries keep their due time across restart and wait for pause, delivery, history
+and budget gates. They never replay attempted or uncertain effects. Old timers do
+not resume. The dashboard distinguishes system retries from participant choices.
+Disabling the saved schedule or initiative permission still blocks starts.
+
+### Companion quiet hours
+
+In **Schedule → Companion quiet hours**, enable and save a From/Until window for
+each companion. Settings start disabled; the displayed 22:00–06:00 is an editable
+suggestion, not an active schedule. Times use the server's local timezone and can
+cross midnight. Start/end must differ. Hannah and Miko can have different windows;
+the same configured participant ID shares its hours across all its rooms.
+
+The shared room waits while either participant is resting. Automatic history
+polling, check-ins, conversations, exploration and background model work wait at
+worker/turn boundaries; a turn already underway may finish. External commands stay
+queued. Local settings, pause/end controls and explicit history sync remain usable.
+Shared-session age limits still apply after a night-time hold. Shared daily starts
+retain their separate missed-start policy. Existing room dead hours further limit
+encounter starts; if no open time exists, a retry stays pending without sending.
+
+These changes need a safe host restart and page reload, with no new migration.
+See [ADR-024](adr/ADR-024-encounter-recovery-and-companion-quiet-hours.md).
 
 ## Configure all three rooms
 
@@ -68,12 +145,15 @@ is retained: other companions use `external` in that older audit table, with the
 actual identity in source evidence, rather than being mislabeled Hannah.
 
 One host and one worker serve all rooms. The primary database also owns account
-history accounting, spacing and cooldown; every room consumes the same allowance.
+history accounting, spacing and cooldown. Every room contributes to the same local
+counter, which resets at 00:00 UTC daily and only warns at its configured threshold.
+Actual server 429 fails the active session and pauses the affected room; sync and
+resume explicitly after cooldown. See [ADR-026](adr/ADR-026-advisory-daily-history-measurement.md).
 Persona switching stays serialized and restores Marc in `finally`. Private chains
 yield after one response/generation step. An in-flight synchronous call can delay
 another room; a persistent worker phase identifies that boundary.
 
-Both `serve` and multi-room `run` use this worker. `serve` includes room links at
+Both `serve` and multi-room `run` use this worker. `serve` includes room buttons at
 the top of the dashboard; the root address is the primary room. Each room's API,
 commands and views are scoped under `/rooms/<key>/`. Same-origin/CSRF/Host and
 bounded-input defenses apply to every room. HTTP handlers enqueue work only.
@@ -104,8 +184,9 @@ The example starts once daily at 18:00 in the Pi's local timezone. The dashboard
 Saving affects future sessions; it does not start a session or end a running one.
 Start conversation begins a session manually; **End session** stops only this
 session at the next worker boundary. The next daily start remains scheduled.
-Quiet/disabled private-room tick allocation is separate from the shared daily
-session's explicit enabled/time control. Missed daily starts are not caught up.
+Private-room tick allocation/dead hours are separate from the shared daily
+session's enabled/time control. Companion quiet windows apply to both modes.
+Missed shared daily starts are not caught up.
 
 Each new companion message is checked locally for case-insensitive `codex`.
 Matches wake Codex to decide whether assistance is needed; simply mentioning Codex
@@ -185,8 +266,10 @@ confirmed relay post. Matching requires a unique unclaimed response from the
 requested companion and matching text when directly captured. Without captured
 text, multiple replies from that companion remain ambiguous. Private-room
 matching stays strict. Ambiguous duplicates and missing replies remain blocked.
-End session does not clear uncertainty. If all history allowance is spent, wait
-for recovery capacity rather than generating another unseen reply.
+End session does not clear uncertainty. A local threshold warning never blocks
+recovery. If Kindroid actually rejects history access, wait for its cooldown before
+sync/recovery rather than generating another unseen reply. Already-paused recovery
+targets and uncertainty evidence remain unchanged on rejection.
 
 ### Recover a room paused after manual chat input
 

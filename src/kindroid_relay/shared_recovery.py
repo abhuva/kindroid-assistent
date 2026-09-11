@@ -7,7 +7,6 @@ from .activity import ActivitySeverity
 from .command_queue import CommandType, validate_payload
 from .kindroid_api import KindroidAPIError
 from .relay import HistoryCooldownError
-from .state import HistoryBudgetError
 
 
 def recovery_status(state, settings) -> dict:
@@ -65,8 +64,6 @@ def recover_shared(app, command_id: str, payload: dict) -> dict:
         history = app.relay.fetch_history(None)
     except HistoryCooldownError:
         return {'outcome': 'recovery_blocked', 'reason': 'History API cooldown; recovery did not change this session.'}
-    except HistoryBudgetError:
-        return {'outcome': 'recovery_blocked', 'reason': 'History allowance exhausted; recovery did not change this session.'}
     except KindroidAPIError:
         return {'outcome': 'recovery_blocked', 'reason': 'History request failed; recovery did not change this session.'}
     tail = next((message for message in reversed(history) if message.message.strip()), None)

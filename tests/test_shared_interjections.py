@@ -258,8 +258,9 @@ def test_room_failure_preserves_specific_pause_reason(monkeypatch, tmp_path, spe
     from kindroid_relay.worker import RelayWorker
 
     config = settings(tmp_path)
-    with RelayState(config.state_path):
-        pass
+    with RelayState(config.state_path) as state:
+        state.set_meta('activity_session', 'fixture-session')
+        state.add_message(config.group_id, ChatMessage('pending', 'ai1', 'ai', 'Hannah', 1, 'Fixture'))
     worker = RoomWorker([config])
 
     def application(self, state):

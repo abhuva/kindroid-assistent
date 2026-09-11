@@ -7,6 +7,33 @@ goals, and self-directed exploration.
 
 ## Current direction
 
+Passive chat monitoring is disabled globally. Each room syncs once on host startup
+or restart; afterward idle rooms make no periodic history reads. Other
+explicit operations, Kin-chosen check-ins and active-session context/recovery still
+sync when needed. See [ADR-027](adr/ADR-027-no-passive-chat-monitoring.md). Older
+idle-polling descriptions below are historical. Schema remains 13.
+
+Local history usage is now advisory, resetting at 00:00 UTC daily. Only actual
+provider rejection stops a session for history rate limiting; spacing and durable
+429 cooldown remain. See [ADR-026](adr/ADR-026-advisory-daily-history-measurement.md).
+This supersedes hard local history budgets in older documents. Schema remains 13.
+
+All rooms now use **Kin-chosen check-ins**, with six-hour fallback, missed-time
+recovery and per-companion quiet hours. Exploration invitations and their automatic
+follow-ups are retired globally. Daily Schedule and shared daily-start controls
+are removed; saved history is retained. See [ADR-025](adr/ADR-025-kin-driven-check-ins-without-invitations.md)
+and the [current operator guide](multi-room-operations.md). Schema remains 13.
+
+The milestones below record earlier deliveries; their invitation/daily-scheduling
+descriptions are superseded by ADR-025.
+
+Participant encounters now recover missed appointments through an invitation to
+meet now or reschedule. Missing timing uses a six-hour system retry, shifted around
+companion quiet hours and room dead time. Per-companion quiet windows span their
+private/shared rooms. See [ADR-024](adr/ADR-024-encounter-recovery-and-companion-quiet-hours.md)
+and [controls](multi-room-operations.md). Room navigation uses buttons; Activity
+offers collapsed session/outcome groups. Schema remains 13.
+
 Shared-session endings now have early farewell-triggered checks and explicit
 ending assessment during assistance, with bounded decision activity. See
 [ADR-023](adr/ADR-023-responsive-shared-session-endings.md). The daily start
@@ -144,6 +171,8 @@ the operational foundation and observational agency features are stable.
   for safely turning natural-language reflection into a future self-change.
 - [Implementation plan](implementation-plan.md): dependency-ordered task and
   subtask checklist covering the dashboard and later agency phases.
+- [Future optimisations](future-optimisations.md): deferred investigations,
+  including delayed Kindroid replies, empty-response recovery and history usage.
 - [Architecture decision records](adr/): individual decisions, alternatives, and
   consequences.
 - [Dashboard initiative budget](adr/ADR-007-dashboard-initiative-budget.md): accepted

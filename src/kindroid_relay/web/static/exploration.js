@@ -46,6 +46,12 @@
         el("curiosity-status").textContent = "Schedule status unavailable; restart the updated relay host.";
         el("curiosity-budget").textContent = "";
       }
+      if (data.retired) {
+        el("exploration-start").disabled = true;
+        el("exploration-status").textContent = "Invitations and automatic follow-ups are retired. Existing records are retained for review.";
+        el("curiosity-status").textContent = "No scheduled exploration.";
+        el("curiosity-budget").textContent = "";
+      }
       const sessions = el("exploration-sessions"); sessions.replaceChildren();
       for (const session of data.sessions) {
         const item = node("details", "");
@@ -53,7 +59,7 @@
         item.append(node("summary", `${session.status}${latestResponse ? ` / ${latestResponse.classification || "interpretation"}: ${latestResponse.status}` : ""} · ${session.id} · budget ${session.budget} invitation`));
         item.append(node("p", `Mode: ${session.mode}; version: ${session.version}. Seed: ${session.seed}`));
         if (session.response_message_id) item.append(source(session.response_message_id));
-        if (["observed", "awaiting_sync"].includes(session.status) && !(session.responses || []).length) {
+        if (!data.retired && ["observed", "awaiting_sync"].includes(session.status) && !(session.responses || []).length) {
           const interpret = node("button", "Interpret response"); interpret.type = "button";
           interpret.disabled = !data.enabled || data.paused;
           interpret.addEventListener("click", () => confirm({ kind: "interpret", session_id: session.id }, interpret,

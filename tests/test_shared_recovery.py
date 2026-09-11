@@ -108,14 +108,15 @@ def test_recovery_guards_do_not_fetch_or_clear_state(tmp_path, guard):
         assert state.connection.execute('SELECT COUNT(*) FROM shared_recoveries').fetchone()[0] == 0
 
 
-@pytest.mark.parametrize('failure', ['budget', 'cooldown', 'http', 'empty', 'pagination', 'pause_changed', 'changed_text', 'commit', 'audit_commit'])
+@pytest.mark.parametrize('failure', ['429', 'cooldown', 'http', 'empty', 'pagination', 'pause_changed', 'changed_text', 'commit', 'audit_commit'])
 def test_failed_recovery_never_partially_imports_or_abandons(tmp_path, failure):
     with RelayState(settings(tmp_path).state_path) as state:
         app, shared, remote, agent, payload = interrupted(tmp_path, state)
         before_messages = [tuple(r) for r in state.connection.execute('SELECT * FROM messages')]
         old = remote.get_messages_page
-        if failure == 'budget':
-            app.relay.settings = replace(app.settings, max_history_requests_24h=state.history_request_count())
+        if failure == '429':
+            def limited(*a, **kw): raise KindroidAPIError('history', 429, 'PRIVATE_EXCEPTION')
+            remote.get_messages_page = limited
         elif failure == 'cooldown': state.set_meta('history_cooldown_until', int(time.time()) + 300)
         elif failure == 'http':
             def failed(*a, **kw): raise KindroidAPIError('history', 503, 'PRIVATE_EXCEPTION')
@@ -207,12 +208,8 @@ def test_recovery_fetches_all_pages_before_adopting_any_history(tmp_path, exhaus
             app.relay.settings = replace(app.settings, max_history_requests_24h=state.history_request_count() + 1)
         result = recover_shared(app, 'recovery', payload)
         assert requests[0] is None
-        if exhausted:
-            assert result['outcome'] == 'recovery_blocked' and len(requests) == 1
-            assert state.turns.has_uncertain() and shared.active() is not None
-        else:
-            assert result['outcome'] == 'recovered' and len(requests) == 2
-            assert state.connection.execute('SELECT COUNT(*) FROM messages').fetchone()[0] == len(remote.messages)
+        assert result['outcome'] == 'recovered' and len(requests) == 2
+        assert state.connection.execute('SELECT COUNT(*) FROM messages').fetchone()[0] == len(remote.messages)
         assert state.is_paused() and len(remote.calls) == 1
 
 

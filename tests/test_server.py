@@ -197,9 +197,12 @@ def test_worker_startup_failure_is_sanitized_and_prevents_http_start(
     assert not config.state_path.with_suffix(".lock").exists()
 
 
+@pytest.mark.parametrize('entry_point', ['host', 'cli'])
 def test_keyboard_interrupt_stops_worker_and_releases_process_lock(
     monkeypatch,
     tmp_path: Path,
+    capsys,
+    entry_point,
 ) -> None:
     config = replace(settings(tmp_path), web_port=0)
     worker_stopped = threading.Event()
@@ -229,15 +232,41 @@ def test_keyboard_interrupt_stops_worker_and_releases_process_lock(
             pass
 
         def run(self):
-            raise KeyboardInterrupt
+            # Reproduce asyncio's exception chain without emitting a Windows
+            # console signal or interrupting the test runner/agent transport.
+            import asyncio
+            try:
+                raise asyncio.CancelledError
+            except asyncio.CancelledError:
+                raise KeyboardInterrupt
 
     monkeypatch.setattr("kindroid_relay.server.RelayWorker", FakeWorker)
     monkeypatch.setattr("kindroid_relay.server.create_web_app", lambda *args: object())
     monkeypatch.setattr("kindroid_relay.server.uvicorn.Server", InterruptingServer)
     monkeypatch.setattr("kindroid_relay.server.ensure_port_available", lambda *args: None)
 
-    with pytest.raises(KeyboardInterrupt):
-        serve_dashboard(config)
+    if entry_point == 'host':
+        with pytest.raises(KeyboardInterrupt):
+            serve_dashboard(config)
+    else:
+        from kindroid_relay.cli import main
+        monkeypatch.setattr('kindroid_relay.cli.Settings.load', lambda _path: config)
+        monkeypatch.setattr('kindroid_relay.cli._configure_logging', lambda _settings: None)
+        assert main(['--env-file', 'fixture.env', 'serve']) == 0
+        captured = capsys.readouterr()
+        assert 'Relay shutdown requested.' in captured.out
+        assert 'Traceback' not in captured.err
 
     assert worker_stopped.is_set()
     assert not config.state_path.with_suffix(".lock").exists()
+
+
+def test_cli_still_reports_real_server_failures(monkeypatch, tmp_path, capsys):
+    from kindroid_relay.cli import main
+    monkeypatch.setattr('kindroid_relay.cli.Settings.load', lambda _path: settings(tmp_path))
+    monkeypatch.setattr('kindroid_relay.cli._configure_logging', lambda _settings: None)
+    def fail(_settings):
+        raise RuntimeError('Fixture server failure')
+    monkeypatch.setattr('kindroid_relay.cli.serve_dashboard', fail)
+    assert main(['serve']) == 1
+    assert 'Error: Fixture server failure' in capsys.readouterr().err

@@ -72,6 +72,9 @@ class FakeAgent:
 
 def settings(tmp_path: Path) -> Settings:
     return Settings(
+        # Historical transport/legacy-policy fixtures; runtime Settings.load()
+        # always selects Kin scheduling. New policy tests opt in explicitly.
+        participant_scheduling=False,
         api_key="kn_test",
         group_id="g1",
         base_url="https://example.test/v1",

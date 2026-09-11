@@ -27,10 +27,12 @@ class CheckInAgent:
 
 
 class CurrentHistoryKindroid(FakeKindroid):
+    companion_name = 'Hannah'
+
     def generate_ai_response(self, group_id, ai_id):
         self.generated = True
         timestamp = max(message.timestamp for message in self.messages) + 1
-        self.messages.append(ChatMessage(f"h-{timestamp}", ai_id, "ai", "Hannah", timestamp, "Mock answer"))
+        self.messages.append(ChatMessage(f"h-{timestamp}", ai_id, "ai", self.companion_name, timestamp, "Mock answer"))
         return "Mock answer"
 
 
@@ -43,6 +45,7 @@ def no_retry_sleep(monkeypatch):
 
 def setup_application(state, config, *, speaker="Codex Test"):
     remote = CurrentHistoryKindroid()
+    remote.companion_name = config.kindroid_display_name
     body = "[CODEX]: Previous mock reply"
     remote.messages = [ChatMessage("u0", "user", "user", speaker, int(time.time()) - 3600, body)]
     delivery = state.create_outbox(body)
@@ -54,8 +57,10 @@ def setup_application(state, config, *, speaker="Codex Test"):
 
 @pytest.mark.parametrize("hours", [None, (0, 6, 12, 18)])
 @pytest.mark.parametrize("speaker", ["Codex Test", "Marc"])
-def test_manual_trigger_survives_new_history_and_stored_identity_fallback(tmp_path: Path, hours, speaker) -> None:
-    config = replace(settings(tmp_path), initiative_schedule_hours=hours)
+@pytest.mark.parametrize('companion', ['Hannah', 'Miko'])
+def test_manual_trigger_survives_new_history_and_stored_identity_fallback(tmp_path: Path, hours, speaker, companion, caplog) -> None:
+    config = replace(settings(tmp_path), initiative_schedule_hours=hours, kindroid_display_name=companion)
+    caplog.set_level('INFO', logger='kindroid_relay.relay')
     with RelayState(config.state_path) as state:
         app, remote, agent = setup_application(state, config, speaker=speaker)
         app.bootstrap()
@@ -69,6 +74,10 @@ def test_manual_trigger_survives_new_history_and_stored_identity_fallback(tmp_pa
         assert len(remote.sent) == 2
         assert remote.turn_requests == [True]
         assert state.get_int("initiative_due_at") > time.time()
+        events = {event.kind: event for event in state.activity.after()}
+        assert events['initiative_offered'].summary == f'Scheduled check-in offered to {companion}'
+        assert events['initiative_answered'].summary == f'{companion} answered the scheduled check-in'
+        assert f'{companion} answered the scheduled check-in' in caplog.text
 
 
 def test_scheduled_check_in_recognizes_known_codex_stored_as_marc(tmp_path: Path) -> None:
@@ -111,17 +120,22 @@ def test_manual_trigger_preserves_guards_and_reports_its_own_outcome(tmp_path: P
             assert state.status()["last_initiative_outcome"] == "previous_check"
 
 
-def test_pending_hannah_message_is_handled_without_an_extra_check_in(tmp_path: Path) -> None:
-    config = settings(tmp_path)
+@pytest.mark.parametrize('companion', ['Hannah', 'Miko'])
+def test_pending_companion_message_is_handled_without_an_extra_check_in(tmp_path: Path, companion, caplog) -> None:
+    config = replace(settings(tmp_path), kindroid_display_name=companion)
+    caplog.set_level('INFO', logger='kindroid_relay.relay')
     with RelayState(config.state_path) as state:
         app, remote, agent = setup_application(state, config)
         app.bootstrap()
-        remote.messages.append(ChatMessage("h-new", "ai1", "ai", "Hannah", int(time.time()) + 1, "Mock pending question"))
+        remote.messages.append(ChatMessage("h-new", "ai1", "ai", companion, int(time.time()) + 1, "Mock pending question"))
         result = app.trigger_initiative()
         assert result == {"handled": 1, "initiative_outcome": "pending_message", "check_in_sent": False}
         assert agent.check_ins == 0
         assert len(remote.sent) == 1  # Normal reply, not an initiative opener.
         assert state.initiative_check_count() == 0
+        skipped = next(event for event in state.activity.after() if event.kind == 'initiative_skipped')
+        assert skipped.summary == f'Initiative check skipped because a message from {companion} is pending'
+        assert f'{companion} already has a pending message' in caplog.text
 
 
 def test_first_trigger_bootstraps_without_replaying_history(tmp_path: Path) -> None:
@@ -146,8 +160,11 @@ def test_manual_trigger_does_not_bypass_history_cooldown(tmp_path: Path) -> None
         assert remote.sent == []
 
 
-def test_sent_check_in_without_hannah_response_is_not_reported_as_skipped(tmp_path: Path) -> None:
-    with RelayState((config := settings(tmp_path)).state_path) as state:
+@pytest.mark.parametrize('companion', ['Hannah', 'Miko'])
+def test_sent_check_in_without_companion_response_is_not_reported_as_skipped(tmp_path: Path, companion, caplog) -> None:
+    config = replace(settings(tmp_path), kindroid_display_name=companion)
+    caplog.set_level('INFO', logger='kindroid_relay.relay')
+    with RelayState(config.state_path) as state:
         app, remote, agent = setup_application(state, config)
         app.bootstrap()
         remote.get_turn = lambda *_args, **_kwargs: None
@@ -155,6 +172,10 @@ def test_sent_check_in_without_hannah_response_is_not_reported_as_skipped(tmp_pa
         assert result == {"handled": 0, "initiative_outcome": "check_in_sent_user_turn", "check_in_sent": True}
         assert len(remote.sent) == 1
         assert state.initiative_check_count() == 1
+        events = {event.kind: event for event in state.activity.after()}
+        assert events['initiative_offered'].summary == f'Scheduled check-in offered to {companion}'
+        assert events['initiative_declined'].summary == f'{companion} did not take the offered check-in turn'
+        assert f'{companion} did not take the offered check-in turn' in caplog.text
 
 
 @pytest.mark.parametrize("quiet", [False, True])

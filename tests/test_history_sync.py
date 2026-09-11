@@ -53,7 +53,7 @@ def test_first_sync_bootstraps_without_old_chat_replay(tmp_path):
         assert not state.pending_ai_messages() and not remote.sent and not remote.turn_requests
 
 
-@pytest.mark.parametrize('block', ['cooldown', 'budget', '429', 'http_error', 'pagination_budget'])
+@pytest.mark.parametrize('block', ['cooldown', '429', 'http_error', 'pagination_429'])
 def test_sync_limits_and_failures_are_explicit_without_retries(tmp_path, block):
     config = replace(settings(tmp_path), max_history_requests_24h=2)
     with RelayState(config.state_path) as state:
@@ -62,22 +62,26 @@ def test_sync_limits_and_failures_are_explicit_without_retries(tmp_path, block):
         state.pause('Fixture')
         if block == 'cooldown':
             state.set_meta('history_cooldown_until', int(time.time()) + 300)
-        if block == 'budget':
-            state.record_history_request(2)
         if block in {'429', 'http_error'}:
             def failing(*a, **kw):
                 raise KindroidAPIError('history', 429 if block == '429' else 503,
                                        'PRIVATE_HTTP_SENTINEL', retry_after_seconds=123)
             remote.get_messages_page = failing
-        if block == 'pagination_budget':
-            remote.get_messages_page = lambda *a, **kw: MessagePage(
-                [ChatMessage('later', 'ai1', 'ai', 'Hannah', int(time.time()), 'Fixture')], True, int(time.time()))
+        if block == 'pagination_429':
+            calls = []
+            def pages(*a, **kw):
+                calls.append(1)
+                if len(calls) == 1:
+                    stamp = int(time.time()) + 10
+                    return MessagePage([ChatMessage('partial', 'ai1', 'ai', 'Hannah', stamp, 'Fixture')], True, stamp)
+                raise KindroidAPIError('history', 429, 'PRIVATE_HTTP_SENTINEL')
+            remote.get_messages_page = pages
         before = state.history_request_count()
         result = app.sync_history('blocked')
-        expected = {'cooldown': 'history_cooldown', 'budget': 'history_budget', '429': 'history_cooldown',
-                    'http_error': 'history_error', 'pagination_budget': 'history_budget'}[block]
+        expected = {'cooldown': 'history_cooldown', '429': 'history_cooldown',
+                    'http_error': 'history_error', 'pagination_429': 'history_cooldown'}[block]
         assert result['sync_outcome'] == expected
-        assert result['history_requests'] == (0 if block in {'cooldown', 'budget'} else 1)
+        assert result['history_requests'] == (0 if block == 'cooldown' else 2 if block == 'pagination_429' else 1)
         assert state.history_request_count() - before == result['history_requests']
         assert result['messages_added'] == 0 and state.is_paused()
         assert not remote.sent and not remote.turn_requests

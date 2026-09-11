@@ -43,6 +43,33 @@ class RelayWorker:
         self.wake_event = wake_event or threading.Event()
         self.stop_event = stop_event or threading.Event()
         self.application_factory = application_factory
+        self._startup_history_pending = True
+
+    def _sync_startup_history(self, state: RelayState, application: RelayApplication) -> bool:
+        """One read-only synchronization per launch, deferred by quiet/cooldown.
+
+        Consume the attempt before I/O: failure must not create an idle retry loop.
+        Paused rooms may import/reconcile history, but are never resumed here.
+        """
+        if not self._startup_history_pending or not isinstance(application, RelayApplication):
+            return False
+        from .quiet_hours import QuietHours
+        if (QuietHours(state, application.settings).blocked()
+                or state.get_int('history_cooldown_until') > time.time()):
+            return False
+        self._startup_history_pending = False
+        if not state.has_active_conversation_work():
+            # A stale audit marker must not turn newly imported chat into a session.
+            application.relay._end_activity_session('inactive_before_startup_sync')
+        with self._scoped_phase(state, WorkerPhase.POLLING, 'Synchronizing startup history once'):
+            try:
+                application.sync_history(None)
+            except Exception as exc:
+                state.activity.add('history_sync', ActivitySeverity.ERROR,
+                                   'Startup history sync failed; use manual Sync history to retry',
+                                   details={'reason': 'startup', 'outcome': 'history_error',
+                                            'error_type': type(exc).__name__})
+        return True
 
     @contextmanager
     def _default_application(self, state: RelayState) -> Iterator[RelayApplication]:
@@ -145,6 +172,8 @@ class RelayWorker:
         if ResponseStore(state, self.settings.group_id, self.settings.kindroid_display_name).recover():
             state.pause('Exploration follow-up interrupted; inspect delivery before resuming')
         recovered = state.commands.recover_interrupted()
+        from .retired_exploration import retire_safe_work
+        retire_safe_work(state, self.settings)
         must_pause = False
         for command in recovered:
             state.activity.add(
@@ -175,6 +204,12 @@ class RelayWorker:
         return WorkerPhase.POLLING
 
     def _dispatch(self, application: RelayApplication, command: CommandRecord) -> dict[str, Any]:
+        from .command_queue import RETIRED_SCHEDULING_COMMANDS
+        if self.settings.participant_scheduling and command.command_type in RETIRED_SCHEDULING_COMMANDS:
+            return {'outcome': 'retired', 'reason': 'Kin-chosen check-ins replaced daily schedules and invitations'}
+        if command.command_type == CommandType.SET_QUIET_HOURS:
+            from .quiet_hours import QuietHours
+            return QuietHours(application.state, application.settings).save(command.payload)
         from .encounters import Encounters
         from .shared import SharedConversation
         if command.command_type == CommandType.RECOVER_SHARED:
@@ -277,15 +312,18 @@ class RelayWorker:
             },
             correlation_id=command.id,
         )
+        rejections_before = getattr(getattr(application, 'relay', None), 'history_rejections', 0)
         try:
             result = self._dispatch(application, command)
         except Exception as exc:
-            memory_failure = (command.command_type in {CommandType.RECOVER_SHARED, CommandType.SET_ENCOUNTER, CommandType.CHOSEN_ENCOUNTER,
+            memory_failure = (command.command_type in {CommandType.SET_QUIET_HOURS, CommandType.RECOVER_SHARED, CommandType.SET_ENCOUNTER, CommandType.CHOSEN_ENCOUNTER,
                                                       CommandType.START_SHARED, CommandType.END_SESSION, CommandType.SET_SHARED_SCHEDULE}
                               or command.command_type.value.startswith("memory_")
                               or command.command_type in {CommandType.SYNC_HISTORY, CommandType.SET_SCHEDULE, CommandType.SCHEDULED_CHECK_IN,
                                                          CommandType.SET_DISCOVERY, CommandType.APPROVE_PUBLIC_TOPIC}
                               or command.command_type in {CommandType.START_EXPLORATION, CommandType.SCHEDULED_EXPLORATION, CommandType.REVIEW_CANDIDATE, CommandType.CLOSE_EXPLORATION, CommandType.INTERPRET_EXPLORATION, CommandType.GARDEN_CORRECT})
+            if isinstance(application, RelayApplication) and command.command_type in SIDE_EFFECTING_COMMANDS:
+                application.relay._end_activity_session('failed_inspect_activity')
             state.commands.transition(
                 command.id,
                 CommandStatus.FAILED,
@@ -309,6 +347,14 @@ class RelayWorker:
                 logger.warning("Memory command %s failed", command.id)
             else:
                 logger.exception("Command %s failed", command.id)
+            return
+        if getattr(getattr(application, 'relay', None), 'history_rejections', 0) > rejections_before:
+            state.commands.transition(command.id, CommandStatus.FAILED, result=result,
+                                      error='Kindroid rejected history access (HTTP 429); inspect before resuming')
+            state.activity.add('command_failed', ActivitySeverity.ERROR,
+                               'Command failed because Kindroid rejected history access',
+                               details={'command_id': command.id, 'outcome': 'history_rate_limited'},
+                               correlation_id=command.id)
             return
         state.commands.transition(
             command.id,
@@ -335,6 +381,7 @@ class RelayWorker:
         )
 
     def run(self) -> None:
+        self._startup_history_pending = True
         factory = RelayStateFactory(self.settings.state_path)
         with factory.connect() as state:
             state.activity.prune(self.settings.activity_retention_days)
@@ -357,7 +404,11 @@ class RelayWorker:
                             application.relay.settings = application.settings
                         curiosity = CuriosityScheduler(state, self.settings)
                         state.worker_status.heartbeat()
-                        command = state.commands.claim_next()
+                        from .quiet_hours import QuietHours, deferred_commands
+                        quiet = QuietHours(state, self.settings).blocked()
+                        if self._sync_startup_history(state, application):
+                            continue
+                        command = state.commands.claim_next(exclude=deferred_commands() if quiet else frozenset())
                         if command is not None:
                             self._run_command(state, application, command)
                             if command.command_type == CommandType.SYNC_HISTORY:
@@ -370,13 +421,23 @@ class RelayWorker:
                                 next_poll_at = min(next_poll_at, time.time())
                             continue
 
+                        if quiet:
+                            self._phase(state, WorkerPhase.IDLE, note='Companion quiet hours; automatic work is waiting')
+                            self.wake_event.wait(1.0)
+                            self.wake_event.clear()
+                            continue
                         from .encounters import Encounters
-                        if Encounters(state, self.settings).tick() or daily.tick() or curiosity.tick():
+                        if Encounters(state, self.settings).tick() or (not self.settings.participant_scheduling and (daily.tick() or curiosity.tick())):
                             continue  # the next loop claims its durable command normally
                         now = time.time()
+                        active_conversation = state.has_active_conversation_work()
                         memory_deadline = now + self.settings.memory_extraction_timeout_seconds
-                        next_initiative = daily.row()['next_due_at'] if daily.configured else state.get_int("initiative_due_at", 0) if self.settings.initiative_enabled else 0
-                        if (not state.is_paused() and memory_deadline < next_poll_at
+                        if self.settings.participant_scheduling:
+                            choice = Encounters(state, self.settings).current()
+                            next_initiative = choice['due_at'] if choice else 0
+                        else:
+                            next_initiative = daily.row()['next_due_at'] if daily.configured else state.get_int("initiative_due_at", 0) if self.settings.initiative_enabled else 0
+                        if (not state.is_paused() and (not active_conversation or memory_deadline < next_poll_at)
                                 and (not next_initiative or memory_deadline < next_initiative)
                                 and hasattr(application, "memory")):
                             try:
@@ -388,7 +449,7 @@ class RelayWorker:
                         cooldown_until = state.get_int("history_cooldown_until", 0)
                         due_at = state.get_int("initiative_due_at", 0)
                         initiative_due = bool(
-                            not daily.configured and self.settings.initiative_enabled
+                            not self.settings.participant_scheduling and not daily.configured and self.settings.initiative_enabled
                             and due_at
                             and now >= due_at
                         )
@@ -417,7 +478,7 @@ class RelayWorker:
                                 ),
                             )
                             next_poll_at = max(next_poll_at, float(cooldown_until))
-                        elif now >= next_poll_at or initiative_due:
+                        elif (active_conversation and now >= next_poll_at) or initiative_due:
                             self._phase(state, WorkerPhase.POLLING)
                             state.activity.add(
                                 "relay_cycle_started",
@@ -483,17 +544,18 @@ class RelayWorker:
                                 delay = self._poll_delay(handled)
                                 next_poll_at = time.time() + delay
                         else:
-                            self._phase(state, WorkerPhase.IDLE)
+                            self._phase(state, WorkerPhase.IDLE, note='Waiting for a scheduled check-in or manual start; chat monitoring is off')
 
                         deadlines = [
                             time.time() + self.settings.worker_heartbeat_seconds,
-                            next_poll_at,
                         ]
+                        if active_conversation:
+                            deadlines.append(next_poll_at)
                         curiosity_due = curiosity.deadline()
                         if curiosity_due:
                             deadlines.append(float(curiosity_due))
                         if (
-                            not daily.configured and self.settings.initiative_enabled
+                            not self.settings.participant_scheduling and not daily.configured and self.settings.initiative_enabled
                             and due_at
                             and cooldown_until <= time.time()
                         ):

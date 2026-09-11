@@ -48,6 +48,11 @@ class SharedConversation:
                 'max_messages': self.settings.shared_max_messages}
 
     def tick(self):
+        if self.settings.participant_scheduling:
+            return False  # Encounters owns timing in every room.
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked():
+            return False
         if self.settings.room_mode != 'shared':
             return False
         raw = self.state.get_meta('shared_config')
@@ -72,7 +77,12 @@ class SharedConversation:
                             minute_offsets=(self.settings.shared_minute,)))
         return True
 
-    def start(self, session_id: str):
+    def start(self, session_id: str, *, opener: str | None = None):
+        from .quiet_hours import QuietHours
+        if opener and not self.settings.initiative_enabled:
+            return {'outcome': 'disabled'}
+        if QuietHours(self.state, self.settings).blocked():
+            return {'outcome': 'quiet_hours'}
         if self.settings.room_mode != 'shared' or len(self.settings.participants) != 2:
             raise ValueError('This room is not configured for companion sessions')
         if self.active() or self.db.execute('SELECT 1 FROM shared_sessions WHERE id=?', (session_id,)).fetchone():
@@ -86,6 +96,8 @@ class SharedConversation:
         self.state.turns.require_reconciled(self.settings.group_id)
         if self.state.is_paused():
             return {'outcome': 'paused'}
+        if QuietHours(self.state, self.settings).blocked():
+            return {'outcome': 'quiet_hours'}
         if self.state.connection.execute("SELECT 1 FROM outbox WHERE status IN ('pending','sending','uncertain')").fetchone():
             raise ReconciliationError('Resolve outbound delivery before starting a shared session')
         tail = self.state.get_meta('shared_history_tail')
@@ -95,6 +107,14 @@ class SharedConversation:
         # Continue after the latest known participant when possible.
         speaker = self._speaker(latest)
         next_speaker = 1 - speaker if speaker is not None else 0
+        from .encounters import Encounters
+        Encounters(self.state, self.settings).retry_later()
+        if opener:
+            if not self.state.record_initiative_check(
+                    self.state.initiative_limit(self.settings.initiative_max_checks_24h), 'started'):
+                return {'outcome': 'daily_budget'}
+            outbox = self.relay._send_user_message(opener, request_kindroid_reply=False)
+            latest = self.state.turns.message('local-user:' + outbox)
         now = int(time.time())
         with self.db:
             self.db.execute('''INSERT INTO shared_sessions
@@ -103,14 +123,20 @@ class SharedConversation:
             self.db.execute('UPDATE messages SET processed=1')
             self.db.execute("DELETE FROM metadata WHERE key='shared_result_outbox'")
             self.db.execute("INSERT INTO metadata VALUES('shared_history_seen',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (tail or '',))
+            self.db.execute("INSERT INTO metadata VALUES('activity_session',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (session_id,))
+        self.state.activity.add('session_started', ActivitySeverity.INFO, 'Companion session started', details={'session_id': session_id})
         return {'outcome': 'started', 'session_id': session_id}
 
     def end(self, reason='operator'):
+        session = self.active()
         with self.db:
             self.db.execute("UPDATE shared_sessions SET status='ended',ended_at=?,reason=? WHERE status='active'",
                             (int(time.time()), reason))
         self.state.activity.add('shared_session_ended', ActivitySeverity.INFO,
-                                'Companion session ended', details={'outcome': reason})
+                                'Companion session ended', details={'outcome': reason, 'session_id': session['id'] if session else ''})
+        self.state.set_meta('activity_session', '')
+        from .encounters import Encounters
+        Encounters(self.state, self.settings).retry_later()
         return {'outcome': 'ended', 'reason': reason}
 
     def _speaker(self, message):
@@ -178,9 +204,14 @@ class SharedConversation:
         return True
 
     def step(self):
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked():
+            return False
         session = self.active()
         if session is None or self.state.is_paused():
             return False
+        if self.state.get_meta('activity_session') != session['id']:
+            self.state.set_meta('activity_session', session['id'])
         now = int(time.time())
         # Reconcile interrupted effects even when the session would otherwise end.
         if session['pending_turn_id']:
@@ -280,7 +311,8 @@ class SharedConversation:
                     lambda: agent.shared_attention(ending_only=ending_only,
                                                    assistance_active=bool(session['assistance_active'])),
                     details={'message_id': message.id}, correlation_id=message.id)
-            if (not isinstance(decision, dict) or set(decision) != {'reply','end_session','end_reason','await_reply','action'}
+            timing_keys = {'next_encounter', 'scheduling_source_id'}
+            if (not isinstance(decision, dict) or set(decision) - timing_keys != {'reply','end_session','end_reason','await_reply','action'}
                     or not isinstance(decision['reply'], str)
                     or type(decision['end_session']) is not bool or type(decision['await_reply']) is not bool
                     or not isinstance(decision['end_reason'], str)
@@ -313,6 +345,22 @@ class SharedConversation:
                     correlation_id=attention_id)
         else:
             decision = json.loads(row['decision_json'])
+        if self.settings.participant_scheduling and decision.get('next_encounter') is not None:
+            from .encounters import Encounters
+            encounters = Encounters(self.state, self.settings)
+            source_id = decision.get('scheduling_source_id')
+            # Only current-session context actually shown to the model may schedule.
+            sources = {m.id: m for m in self.state.recent_messages(50)}
+            source = sources.get(source_id) if isinstance(source_id, str) else None
+            stamp = source.timestamp if source else 0
+            if stamp > 10_000_000_000:
+                stamp //= 1000
+            try:
+                if source is None or stamp < session['started_at']:
+                    raise ValueError('Scheduling source is outside this session')
+                encounters.choose(source, decision['next_encounter'])
+            except (ValueError, TypeError, OverflowError):
+                encounters.retry_later()
         anchor = session['anchor_id']
         if self.state.is_paused():
             return
@@ -332,8 +380,11 @@ class SharedConversation:
                 self.db.execute("UPDATE shared_sessions SET status='ended',ended_at=?,reason='natural_end' WHERE id=?",
                                 (int(time.time()), session['id']))
         if decision['end_session']:
+            from .encounters import Encounters
+            Encounters(self.state, self.settings).retry_later()
             self.state.activity.add('shared_session_ended', ActivitySeverity.INFO,
-                'Companion session ended', details={'outcome': 'natural_end'})
+                'Companion session ended', details={'outcome': 'natural_end', 'session_id': session['id']})
+            self.state.set_meta('activity_session', '')
 
     def _bind_attention(self, attention_id, outbox):
         with self.db:

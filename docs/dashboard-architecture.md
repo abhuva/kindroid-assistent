@@ -5,6 +5,13 @@
 
 ## Scope
 
+**2026-09-11 scheduling update:** [ADR-025](adr/ADR-025-kin-driven-check-ins-without-invitations.md)
+retires Daily Schedule, shared daily-start and discovery controls globally.
+Schedule retains per-companion quiet hours; Next encounter works in every room.
+Invitation/tick mutation endpoints return 409 and legacy queued commands complete
+with `outcome=retired` without external work. Historical exploration review and
+uncertainty inspection remain. Older scheduling descriptions below are historical.
+
 The dashboard is a localhost-only operational console served by the same operating
 system process that runs the relay. It reads durable relay state and submits
 commands to the relay worker. It does not perform Kindroid or Codex operations in
@@ -15,6 +22,14 @@ configuration editing, and automatic prompt modification are not part of the fir
 dashboard release.
 
 ## Process topology
+
+**2026-09-11 extension:** Room buttons select exactly one scoped dashboard. Activity
+groups new session-ID-linked events and falls back to retained command/cycle
+boundaries for older events, preserving warning summaries and the all-events view.
+`POST /api/v1/settings/quiet-hours` validates and queues companion availability;
+the worker stores it in account metadata. `GET /api/v1/encounters` exposes per-room
+companion windows and whether quiet hours are active. No request handler starts
+external work. See [ADR-024](adr/ADR-024-encounter-recovery-and-companion-quiet-hours.md).
 
 **2026-09-10 extension:** With `RELAY_ROOMS_FILE`, one worker rotates between
 isolated room databases and dashboard sub-applications. The primary store also
@@ -99,6 +114,16 @@ handlers may:
 HTTP handlers may not call `Relay`, `KindroidClient`, or `CodexAgent` directly.
 
 The worker replaces the outer polling `sleep` with an interruptible event wait.
+Under [ADR-027](adr/ADR-027-no-passive-chat-monitoring.md), each room performs one
+startup synchronization (deferred by quiet hours/cooldown, no retry loop). The
+worker owns this read/reconciliation; it neither sends messages nor resumes paused
+rooms. Its `history_sync` activity has `reason=startup` and no fabricated command
+ID. After startup catch-up, idle wakes perform only
+local housekeeping and scheduling, not history reads. Automatic private work
+requires a live session with a pending reply/reconciliation; imported chat alone
+cannot start a new conversation. Shared work requires an active shared session.
+Snapshot `schedule.background_history_polling` is always false; retained interval
+fields describe active context/recovery cadence, not idle monitoring.
 Internal waits required by Kindroid rate limits and response discovery remain
 synchronous in the first release. The UI reports commands as queued while the
 worker is inside such a wait.
@@ -213,11 +238,11 @@ the browser's local timezone.
   `idempotency_key`. A worker-owned external read and local reconciliation, not a
   conversation command. Allowed while paused; no resume, generation, persona
   change or delivery retry. One active sync at a time; retrying the same key returns
-  the same record. History pagination, spacing, rolling budget and 429 cooldown
+  the same record. History pagination, spacing and provider 429 cooldown
   remain enforced. Interrupted reads are not replayed and alone do not pause the
   relay. Missing/ambiguous reconciliation stays incomplete, without relaxing links
   or cursor rules. Result `sync_outcome` distinguishes `synced`, `bootstrapped`,
-  `history_cooldown`, `history_budget`, `history_pending`,
+  `history_cooldown`, `history_pending`,
   `reconciliation_unresolved`, and `history_error`; successful command handling
   does not itself imply successful synchronization. Only allow-listed outcomes,
   counts, sync/retry timestamps and paused state are exposed, never exception bodies.
@@ -239,7 +264,7 @@ consistent error object and never return tracebacks to the browser.
 (local GET only) from **Sync Kindroid history** (protected durable command).
   Completion or a blocker is shown inline and reloads the local message list. Unknown
 submission outcomes use the shared same-request retry control. Read-only sync does
-not force a follow-up poll; independent scheduled/normal worker activity remains
+not start a new conversation; scheduled check-ins and existing active sessions remain
 enabled unless the operator pauses it. See [operator behavior](../README.md).
 
 **2026-09-11 sync diagnostics:** Durable command `completed` still means the
@@ -268,7 +293,11 @@ The first dashboard is a single responsive page with:
 2. **Controls:** Start conversation, Trigger check-in, Pause, and Resume. Buttons
    disable when their operation is invalid or already queued.
 3. **Schedule and quota:** next initiative, last initiative result, quiet hours,
-   history reads in the rolling 24-hour window, and configured maximum.
+   history reads in the current UTC day, next reset and advisory warning threshold.
+   The legacy `relay.history_requests_24h` field now measures that fixed day;
+   `history_window_start_at` and `history_window_reset_at` are UTC epoch seconds.
+   No local threshold disables controls or worker operations. Actual history 429
+   fails the affected command/session and pauses the room; see ADR-026.
    The separate Check-in budget panel shows attempts used/effective limit and
    next available budget slot, and allows queued limit edits. Snapshot field
    `schedule.initiative_budget` contains `used`, `limit`, `available_at` (epoch

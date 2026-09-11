@@ -32,6 +32,7 @@ class WorkerPhase(str, Enum):
 
 COMMON_DETAIL_FIELDS = frozenset(
     {
+        'session_id',
         "approval_id",
         "command_id",
         "command_type",
@@ -60,6 +61,8 @@ COMMON_DETAIL_FIELDS = frozenset(
 
 ACTIVITY_KINDS = frozenset(
     {
+        'exploration_retired',
+        'quiet_hours_changed', 'encounter_retry', 'encounter_missed', 'session_started', 'session_ended',
         'shared_check_requested', 'shared_check_decided',
         'encounter_choice', 'shared_session_ended', 'shared_context_changed', 'shared_session_recovered', 'room_work_failed',
         'discovery_changed', 'discovery_source', 'experience_updated',
@@ -113,6 +116,7 @@ ACTIVITY_KINDS = frozenset(
 
 SAFETY_CRITICAL_ACTIVITY_KINDS = frozenset(
     {
+        'quiet_hours_changed', 'encounter_retry', 'encounter_missed', 'session_started', 'session_ended',
         'encounter_choice', 'shared_session_ended', 'shared_context_changed', 'shared_session_recovered', 'room_work_failed',
         'discovery_changed', 'experience_updated',
         "schedule_changed",
@@ -190,6 +194,11 @@ class ActivityStore:
     ) -> ActivityRecord:
         if kind not in ACTIVITY_KINDS:
             raise ValueError(f"unknown activity kind: {kind}")
+        if kind.startswith(('codex_', 'outbound_', 'generation_', 'message_', 'initiative_',
+                            'reply_', 'shared_', 'encounter_', 'session_')) or kind == 'relay_paused':
+            session = self.connection.execute("SELECT value FROM metadata WHERE key='activity_session'").fetchone()
+            if session and session[0]:
+                details = {'session_id': session[0], **(details or {})}
         safe_details = redact_mapping(
             details or {}, allowed_keys=COMMON_DETAIL_FIELDS
         )

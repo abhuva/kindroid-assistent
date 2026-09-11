@@ -1,7 +1,18 @@
 # ADR-020: Isolated rooms and participant-chosen encounters
 
+Monitoring update (2026-09-11): [ADR-027](ADR-027-no-passive-chat-monitoring.md)
+removes idle history polling in all rooms while preserving active sessions.
+
+History policy update (2026-09-11): [ADR-026](ADR-026-advisory-daily-history-measurement.md)
+supersedes local hard/rolling history limits with daily UTC advisory measurement.
+Actual history 429 now fails the session and pauses its room; cooldown remains.
+
 **Status:** Accepted | **Date:** 2026-09-10
 **Participants:** Marc, Codex
+
+**2026-09-11 amendment:** [ADR-025](ADR-025-kin-driven-check-ins-without-invitations.md)
+supersedes invitation workflows, optional timing and shared daily starts with
+Kin-driven check-ins in every room. Room isolation and effect safeguards remain.
 
 ## Context
 
@@ -48,6 +59,9 @@ Empty generation bodies still require budgeted history recovery. The new behavio
 is opt-in; existing configuration remains valid. This amends ADR-005, ADR-008,
 ADR-016, ADR-017 and ADR-019 for configured multi-room/participant encounter modes.
 Joint participant scheduling and cross-room memory remain deferred.
+
+[ADR-024](ADR-024-encounter-recovery-and-companion-quiet-hours.md) adds missed
+appointment recovery, system retry timing and companion-specific quiet windows.
 
 [ADR-021](ADR-021-shared-room-interjections.md) records shared-room continuation
 and safe history matching when Marc or the app adds messages during a session.

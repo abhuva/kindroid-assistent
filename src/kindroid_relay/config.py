@@ -156,7 +156,7 @@ class Settings:
     room_label: str = ""
     room_mode: str = "assistant"
     participants: tuple[tuple[str, str], ...] = ()
-    participant_scheduling: bool = False
+    participant_scheduling: bool = True
     account_state_path: Path | None = None
     cooperative_turns: bool = False
     shared_hour: int = 18
@@ -332,7 +332,7 @@ class Settings:
                 values, "RELAY_LOG_BACKUP_COUNT", 5, 1
             ),
             memory_enabled=_boolean(values, "RELAY_MEMORY_ENABLED", False),
-            exploration_enabled=_boolean(values, "RELAY_EXPLORATION_ENABLED", False),
+            exploration_enabled=False,  # Invitations are retired globally (ADR-025).
             exploration_auto_interpret=_boolean(values, "RELAY_EXPLORATION_AUTO_INTERPRET", True),
             exploration_max_sessions_24h=_integer(values, "RELAY_EXPLORATION_MAX_SESSIONS_24H", 3, 1),
             curiosity_enabled=_boolean(values, 'RELAY_CURIOSITY_ENABLED', False),
@@ -351,7 +351,7 @@ class Settings:
             memory_extractor=memory_extractor,
             memory_extraction_timeout_seconds=memory_timeout,
             rooms_file=values.get("RELAY_ROOMS_FILE", "").strip(),
-            participant_scheduling=_boolean(values, "RELAY_PARTICIPANT_SCHEDULING", False),
+            participant_scheduling=True,  # Legacy opt-out is no longer a runtime mode.
         )
 
     def ensure_runtime_directories(self) -> None:

@@ -14,7 +14,7 @@ from kindroid_relay.models import ChatMessage, AgentReply
 from kindroid_relay.rooms import configured_rooms
 from kindroid_relay.config import ConfigurationError
 from kindroid_relay.shared import SharedConversation
-from kindroid_relay.state import RelayState, RelayStateFactory, HistoryBudgetError
+from kindroid_relay.state import RelayState, RelayStateFactory
 from kindroid_relay.schedule import DailyScheduler
 from kindroid_relay.curiosity import CuriosityScheduler
 from kindroid_relay.turns import ReconciliationError
@@ -103,15 +103,18 @@ def test_due_choice_queues_once_and_replacement_invalidates_old_command(tmp_path
         assert service.run(None, command.id)['outcome'] == 'superseded'
 
 
-def test_missed_choice_is_not_caught_up(tmp_path):
+def test_missed_choice_queues_a_recovery_invitation(tmp_path):
     config = chosen_settings(tmp_path)
     with RelayState(config.state_path) as state:
         service = Encounters(state, config)
         service.override(int(time.time()) + 60)
         with state.connection:
             state.connection.execute('UPDATE encounter_choices SET due_at=?', (int(time.time()) - 7200,))
+        original = service.current()['id']
+        assert service.tick()
+        assert service.current()['kind'] == 'missed'
+        assert state.connection.execute('SELECT status FROM encounter_choices WHERE id=?', (original,)).fetchone()[0] == 'missed'
         assert not service.tick()
-        assert service.current()['status'] == 'missed'
         assert service.controls_schedule()
 
 
@@ -121,8 +124,8 @@ def test_secondary_room_shares_account_budget_only(tmp_path):
         primary.record_history_request(2)
         other.record_history_request(2)
         assert primary.history_request_count() == other.history_request_count() == 2
-        with pytest.raises(HistoryBudgetError):
-            other.record_history_request(2)
+        other.record_history_request(2)
+        assert primary.history_request_count() == other.history_request_count() == 3
         other.set_meta('history_cooldown_until', 12345)
         assert primary.get_int('history_cooldown_until') == 12345
         other.set_meta('codex_thread_id', 'miko-thread')
@@ -350,6 +353,7 @@ def test_one_worker_rotates_rooms_with_pending_work(monkeypatch, tmp_path):
     for config in (first, second):
         with RelayState(config.state_path) as state:
             state.add_message(config.group_id, ChatMessage('same-id', 'ai', 'ai', config.room_key, 1, config.room_key))
+            state.set_meta('activity_session', 'active-' + config.room_key)
     worker = RoomWorker([first, second])
     calls, owners = [], []
     def application(self, state):
@@ -397,7 +401,7 @@ def test_private_reply_saves_choice_before_receipt_and_only_asks_once(tmp_path):
         app = RelayApplication(config, state, SharedRemote(), lambda: nullcontext(SharedAgent()))
         msg = source(state)
         result = app.relay._encounter_reply(msg, AgentReply('Talk later.', False, next_encounter=after()))
-        assert result.reply.startswith('Next encounter saved')
+        assert result.reply.startswith('Next check-in saved')
         assert Encounters(state, config).current() is not None
         assert not result.request_kindroid_reply
         state.set_meta('encounter_choice_received', 0)
@@ -407,39 +411,29 @@ def test_private_reply_saves_choice_before_receipt_and_only_asks_once(tmp_path):
         assert not result.request_kindroid_reply
 
 
-def test_exploration_choice_waits_for_delivered_ack_and_queues_once(tmp_path):
+def test_exploration_choice_is_ignored_without_losing_next_time(tmp_path):
     config = replace(chosen_settings(tmp_path), exploration_enabled=True)
     with RelayState(config.state_path) as state:
         msg = source(state)
         app = RelayApplication(config, state, SharedRemote(), lambda: nullcontext(SharedAgent()))
         result = app.relay._encounter_reply(msg, AgentReply('Explore.', False, next_encounter=after(), explore=True))
-        assert result.reply.startswith('Next encounter saved')
+        assert result.reply.startswith('Next check-in saved')
         service = Encounters(state, config)
         assert not service.queue_exploration()  # No outbound acknowledgement yet.
         app.relay._send_user_message(result.reply, source_message_id=msg.id, request_kindroid_reply=False)
-        assert service.queue_exploration()
         assert not service.queue_exploration()
-        assert state.commands.claim_next().command_type == CommandType.START_EXPLORATION
+        assert not service.queue_exploration()
+        assert state.commands.claim_next() is None
 
 
-def test_exploration_interpretation_also_captures_next_time(tmp_path, monkeypatch):
-    from datetime import datetime, timezone
-    from test_exploration_response import scenario, run_offer
-    _, state, remote, app, interpreter = scenario(tmp_path, monkeypatch,
-        replies=('I like the first one. Check in again in four hours.',), participant_scheduling=True)
-    original = interpreter.interpret
-    due = int(time.time()) + 14400
-    def interpret(*args):
-        result = original(*args)
-        result['next_encounter'] = {'kind': 'at', 'delay_seconds': None,
-            'at': datetime.fromtimestamp(due, timezone.utc).isoformat(), 'evidence': 'in four hours'}
-        return result
-    interpreter.interpret = interpret
-    with state:
-        run_offer(state, app)
-        assert Encounters(state, app.settings).current()['due_at'] == due
-        assert len(interpreter.calls) == 1
-        assert state.get_int('encounter_choice_received') == 1
+def test_retired_exploration_interpretation_has_no_external_work(tmp_path):
+    config = chosen_settings(tmp_path)
+    remote = SharedRemote()
+    with RelayState(config.state_path) as state:
+        app = RelayApplication(config, state, remote, lambda: nullcontext(SharedAgent()))
+        assert app.interpret_exploration('command', 'old-session')['outcome'] == 'retired'
+        assert not remote.calls and not remote.posts
+
 
 
 def test_shared_approved_result_does_not_request_auto_speaker(tmp_path):
@@ -481,10 +475,10 @@ def test_chosen_exploration_closing_receipt_is_not_repeated(tmp_path):
         state.set_meta('encounter_exploration_command', record.id)
         state.set_meta('encounter_exploration_receipt', 'Next encounter saved for tomorrow.')
         state.set_meta('encounter_choice_received', 1)
-        assert Encounters(state, config).finish_exploration(app)
-        assert len(remote.posts) == 1 and not remote.calls
         assert not Encounters(state, config).finish_exploration(app)
-        assert len(remote.posts) == 1
+        assert not remote.posts and not remote.calls
+        assert not Encounters(state, config).finish_exploration(app)
+        assert not remote.posts
 
 
 def test_shared_daily_resave_cannot_start_twice_on_same_date(tmp_path):

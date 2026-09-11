@@ -180,6 +180,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         try:
             return serve_dashboard(settings)
+        except KeyboardInterrupt:
+            # The host's finally block has already requested worker shutdown.
+            # Uvicorn re-raises the captured interrupt after HTTP cleanup.
+            print("Relay shutdown requested.")
+            return 0
         except RelayAlreadyRunning as exc:
             print(str(exc), file=sys.stderr)
             return 3

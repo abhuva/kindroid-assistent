@@ -229,8 +229,12 @@ def create_web_app(
         html = template.replace("{{CSRF_TOKEN}}", token).replace(
             "{{POLL_MS}}", str(settings.web_poll_seconds * 1000)
         )
-        links = ''.join('<a href="' + html_module.escape(url, quote=True) + '">' + html_module.escape(label) + '</a> '
-                        for label, url in (room_links or []))
+        prefix = request.scope.get('root_path', '')
+        selected = prefix.rstrip('/') + '/' if prefix else '/rooms/' + settings.room_key + '/'
+        links = ''.join('<button type="button" class="room-button" data-room-url="'
+                        + html_module.escape(url, quote=True) + '" aria-pressed="'
+                        + ('true' if url == selected else 'false') + '">'
+                        + html_module.escape(label) + '</button>' for label, url in (room_links or []))
         html = html.replace('{{ROOM_LINKS}}', links).replace('{{ROOM_LABEL}}', html_module.escape(settings.room_label or settings.kindroid_display_name))
         prefix = request.scope.get('root_path', '')
         html = html.replace('src="/static/', f'src="{prefix}/static/').replace('href="/static/', f'href="{prefix}/static/')
@@ -256,16 +260,18 @@ def create_web_app(
             initiative_budget = state.initiative_budget(settings.initiative_max_checks_24h)
             from ..schedule import DailyScheduler
             daily = DailyScheduler(state, settings)
-            shared_schedule = daily.snapshot()
+            shared_schedule = {'configured': False, 'retired': True} if settings.participant_scheduling else daily.snapshot()
             if shared_schedule['configured']:
                 relay_status['initiative_due_at'] = shared_schedule['next_due_at']
             from ..encounters import Encounters
             encounters = Encounters(state, settings)
-            if settings.room_mode == 'shared':
+            from ..quiet_hours import QuietHours
+            companion_quiet = QuietHours(state, settings).snapshot()
+            if settings.room_mode == 'shared' and not settings.participant_scheduling:
                 relay_status['initiative_due_at'] = state.get_int('shared_due_at') or None
             elif encounters.controls_schedule():
                 choice = encounters.current()
-                relay_status['initiative_due_at'] = choice['due_at'] if choice['status'] in {'pending', 'queued'} else None
+                relay_status['initiative_due_at'] = choice['due_at'] if choice and choice['status'] in {'pending', 'queued'} else None
             worker = state.worker_status.get()
             active = (
                 state.commands.get(worker.active_command_id)
@@ -288,14 +294,17 @@ def create_web_app(
             worker=worker_response,
             active_command=_command_response(active) if active else None,
             schedule={
+                "participant_scheduling": settings.participant_scheduling,
                 "daily": shared_schedule,
                 "initiative_enabled": settings.initiative_enabled,
                 "initiative_budget": initiative_budget,
                 "initiative_schedule_hours": settings.initiative_schedule_hours,
                 "initiative_interval_seconds": settings.initiative_interval_seconds,
                 "initiative_quiet_hours": settings.initiative_quiet_hours,
+                "companion_quiet_hours": companion_quiet,
                 "history_request_limit_24h": settings.max_history_requests_24h,
                 "active_poll_seconds": settings.poll_seconds,
+                "background_history_polling": False,
                 "idle_poll_seconds": settings.idle_poll_seconds,
                 "active_history_interval_seconds": (
                     settings.min_history_interval_seconds
@@ -478,6 +487,9 @@ def create_web_app(
         body: CommandSubmission,
         payload: dict[str, Any] | None = None,
     ) -> CommandResponse:
+        from ..command_queue import RETIRED_SCHEDULING_COMMANDS
+        if settings.participant_scheduling and command_type in RETIRED_SCHEDULING_COMMANDS:
+            raise HTTPException(409, 'Daily schedules and exploration invitations are retired; use Kin-chosen encounters')
         with state_factory.connect() as state:
             command, created = state.commands.enqueue(
                 command_type,
@@ -544,7 +556,8 @@ def create_web_app(
             effective = effective_settings(state, settings)
             return {**AgencyStore(state, settings.group_id).snapshot(effective.exploration_max_sessions_24h),
                     'curiosity': CuriosityScheduler(state, settings).snapshot(),
-                    'enabled': settings.exploration_enabled, 'paused': state.is_paused()}
+                    'enabled': settings.exploration_enabled and not settings.participant_scheduling,
+                    'retired': settings.participant_scheduling, 'paused': state.is_paused()}
 
     @app.get('/api/v1/discovery')
     def discovery_status() -> dict[str, Any]:
@@ -615,16 +628,23 @@ def create_web_app(
 
     @app.get('/api/v1/encounters')
     def encounters_status():
+        from ..quiet_hours import QuietHours
         from ..encounters import Encounters
         from ..shared_recovery import recovery_status
         import json
         with state_factory.connect() as state:
             row = state.connection.execute('SELECT * FROM shared_sessions ORDER BY rowid DESC LIMIT 1').fetchone()
             return {**Encounters(state, settings).snapshot(), 'mode': settings.room_mode,
+                    'quiet_hours': QuietHours(state, settings).snapshot(),
+                    'quiet_now': QuietHours(state, settings).blocked(),
                     'session': dict(row) if row else None, 'next_shared_at': state.get_int('shared_due_at'),
                     'recovery': recovery_status(state, settings),
                     'shared_config': json.loads(state.get_meta('shared_config') or json.dumps({
                         'enabled': True, 'daily_time': f'{settings.shared_hour:02}:{settings.shared_minute:02}'}))}
+
+    @app.post('/api/v1/settings/quiet-hours', response_model=CommandResponse, status_code=202)
+    def set_quiet_hours(body: MemorySubmission):
+        return enqueue(CommandType.SET_QUIET_HOURS, body, body.payload)
 
     @app.post('/api/v1/settings/shared-session', response_model=CommandResponse, status_code=202)
     def set_shared_schedule(body: MemorySubmission):

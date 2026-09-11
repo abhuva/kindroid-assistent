@@ -23,7 +23,7 @@ class Encounters:
         return self.db.execute("SELECT * FROM encounter_choices ORDER BY rowid DESC LIMIT 1").fetchone()
 
     def controls_schedule(self) -> bool:
-        return self.settings.participant_scheduling and self.current() is not None
+        return self.settings.participant_scheduling
 
     def attributed(self, message) -> bool:
         if message.sender_type != 'ai' or message.message.lstrip().startswith('[CODEX]:'):
@@ -31,11 +31,10 @@ class Encounters:
         people = self.settings.participants
         turn = self.db.execute('SELECT * FROM generation_turns WHERE id=?', (message.id,)).fetchone()
         if people:
-            ai, name = people[0]
             if message.sender not in {'', 'ai'}:
-                return message.sender == ai
-            return bool(turn and turn['ai_id'] == ai and turn['status'] == 'reconciled'
-                        and message.display_name.casefold() == name.casefold())
+                return message.sender in {ai for ai, _ in people}
+            return any(bool(turn and turn['ai_id'] == ai and turn['status'] == 'reconciled'
+                           and message.display_name.casefold() == name.casefold()) for ai, name in people)
         # Legacy single-companion deployments use the existing confirmed identity rule.
         if not turn or turn['status'] not in {'received', 'reconciled'}:
             return False
@@ -100,19 +99,53 @@ class Encounters:
         if row['due_at'] is None:
             return 'No further automatic encounters are scheduled.'
         stamp = datetime.fromtimestamp(row['due_at']).astimezone().isoformat(timespec='minutes')
-        return f'Next encounter saved for {stamp}; this replaces automatic check-ins and exploration invitations.'
+        if row['kind'] == 'retry':
+            return f'The relay has scheduled a follow-up for {stamp}, subject to quiet hours and availability.'
+        return f'Next check-in saved for {stamp}.'
 
     def snapshot(self):
         row = self.current()
         return {'enabled': self.settings.participant_scheduling,
                 'choice': dict(row) if row else None,
-                'controls_schedule': self.controls_schedule()}
+                'controls_schedule': self.controls_schedule(), 'retry_seconds': 21600}
+
+    def next_open(self, at):
+        """First eligible minute; daily windows repeat, with room for a DST day."""
+        if not self.policy_block(at):
+            return at
+        if self.policy_block(at) == 'disabled':
+            return None
+        candidate = (at // 60 + 1) * 60
+        for _ in range(3 * 24 * 60):
+            if not self.policy_block(candidate):
+                return candidate
+            candidate += 60
+        return None
+
+    def retry_later(self):
+        """A system fallback never replaces a pending choice or an explicit refusal."""
+        if not self.settings.participant_scheduling:
+            return None
+        row = self.current()
+        if row and (row['status'] in {'pending', 'queued'} or row['kind'] == 'none'):
+            return row
+        at = int(time.time()) + 21600
+        self._save(None, 'retry', self.next_open(at) or at, 'system')
+        self.state.activity.add('encounter_retry', ActivitySeverity.INFO,
+            'No usable next time; system retry set for six hours later or the next open time',
+            details={'outcome': 'retry_scheduled'})
+        return self.current()
 
     def policy_block(self, at):
+        from .quiet_hours import QuietHours
         from .schedule import saved_schedule
         from .curiosity import inside_quiet
         if not self.settings.initiative_enabled:
             return 'disabled'
+        if QuietHours(self.state, self.settings).blocked(at):
+            return 'quiet_hours'
+        if self.settings.participant_scheduling:
+            return None
         schedule = saved_schedule(self.state, self.settings.group_id)
         if schedule is not None:
             if not schedule['enabled']:
@@ -121,20 +154,30 @@ class Encounters:
         return 'quiet_hours' if inside_quiet(at, self.settings.initiative_quiet_hours) else None
 
     def tick(self):
-        if self.queue_exploration():
-            return True
+        if self.settings.participant_scheduling and self.current() is None:
+            if not self.state.is_paused():
+                self.retry_later()
         row = self.current()
-        if not self.settings.participant_scheduling or not row or row['status'] != 'pending':
+        if not self.settings.participant_scheduling or not row or row['status'] not in {'pending', 'missed'}:
             return False
         now = int(time.time())
         if row['due_at'] > now:
             return False
-        # A requested meeting is not caught up after a long outage or pause.
-        if now > row['due_at'] + 3600:
+        # Missing an appointment changes the invitation, never replays its work.
+        if row['status'] == 'missed' or (row['kind'] not in {'missed', 'retry'} and now > row['due_at'] + 3600):
             with self.db:
                 self.db.execute("UPDATE encounter_choices SET status='missed' WHERE id=?", (row['id'],))
+                self.db.execute('INSERT INTO encounter_choices VALUES(?,NULL,?,?,?,\'pending\',NULL,\'system\')',
+                    ('missed-' + row['id'], 'missed', now, now))
+            self.state.activity.add('encounter_missed', ActivitySeverity.WARNING,
+                'Encounter missed; a check-in will offer now or rescheduling at the next open time',
+                details={'outcome': 'recovery_pending'})
+            row = self.current()
+        # Imported messages alone do not start work, but must not indefinitely
+        # block the next chosen check-in now that idle monitoring is disabled.
+        if self.state.is_paused() or self.state.has_active_conversation_work():
             return False
-        if self.state.is_paused() or self.state.pending_ai_messages():
+        if self.db.execute("SELECT 1 FROM shared_sessions WHERE status='active'").fetchone():
             return False
         if self.policy_block(now) or self.state.turns.has_uncertain():
             return False
@@ -145,7 +188,7 @@ class Encounters:
             return False
         if self.state.initiative_check_count() >= self.state.initiative_limit(self.settings.initiative_max_checks_24h):
             return False
-        if self.state.get_int('history_cooldown_until') > now or self.state.history_request_count() >= self.settings.max_history_requests_24h:
+        if self.state.get_int('history_cooldown_until') > now:
             return False
         if self.db.execute("SELECT 1 FROM commands WHERE status IN ('queued','running')").fetchone():
             return False
@@ -161,12 +204,19 @@ class Encounters:
         return True
 
     def prepare_exploration(self, message):
+        if self.settings.participant_scheduling:
+            return  # Retired; never revive a legacy invitation intent.
         import hashlib
         command_id = hashlib.sha256(('chosen-exploration:' + message.id).encode()).hexdigest()
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO encounter_explorations VALUES(?,?,'pending')", (message.id, command_id))
 
     def queue_exploration(self):
+        if self.settings.participant_scheduling:
+            return False
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked():
+            return False
         if not self.settings.participant_scheduling or not self.settings.exploration_enabled or self.state.is_paused():
             return False
         row = self.db.execute('''SELECT e.* FROM encounter_explorations e
@@ -188,19 +238,46 @@ class Encounters:
         row = self.current()
         if not row or row['command_id'] != command_id or row['status'] != 'queued':
             return {'outcome': 'superseded'}
+        # If a queued appointment expired, create a fresh recovery invitation.
+        if row['kind'] not in {'missed', 'retry'} and time.time() > row['due_at'] + 3600:
+            with self.db:
+                self.db.execute("UPDATE encounter_choices SET status='missed' WHERE id=?", (row['id'],))
+                self.db.execute('INSERT INTO encounter_choices VALUES(?,NULL,?,?,?,\'pending\',NULL,\'system\')',
+                    ('missed-' + row['id'], 'missed', int(time.time()), int(time.time())))
+            return {'outcome': 'recovery_pending'}
+        if not self.settings.participant_scheduling or self.policy_block(int(time.time())):
+            # No external attempt occurred. Leave a new pending decision, not a
+            # runnable duplicate of this command, for the next open window.
+            with self.db:
+                self.db.execute("UPDATE encounter_choices SET status='superseded' WHERE id=?", (row['id'],))
+            self._save(None, row['kind'], row['due_at'], 'system')
+            return {'outcome': 'waiting_for_open_time'}
         # Consume before external work, so a crash or failed send cannot requeue it.
         with self.db:
             self.db.execute("UPDATE encounter_choices SET status='attempted' WHERE id=?", (row['id'],))
-        if not self.settings.participant_scheduling or time.time() > row['due_at'] + 3600 or self.policy_block(int(time.time())):
-            return {'outcome': 'missed_or_disabled'}
+        self.retry_later()
         application.relay.chosen_encounter = True
+        application.relay.encounter_opener = (
+            'We missed our planned encounter because the relay was unavailable or unable to start. '
+            'Would you like to spend some time together now, or choose another time?'
+            if row['kind'] == 'missed' else
+            'We did not settle on a usable next time, so this is the follow-up check-in. '
+            'Would you like to meet now, or choose another time?'
+            if row['kind'] == 'retry' else None)
         try:
+            if self.settings.room_mode == 'shared':
+                from .shared import SharedConversation
+                return SharedConversation(application).start(command_id, opener=application.relay.encounter_opener or
+                    'It is time for our planned check-in. Would you like to talk now, or choose another time?')
             return application.trigger_initiative()
         finally:
             application.relay.chosen_encounter = False
+            application.relay.encounter_opener = None
 
     def finish_exploration(self, application):
         """Return from a chosen bounded exploration to the timing conversation."""
+        if self.settings.participant_scheduling:
+            return False
         command_id = self.state.get_meta('encounter_exploration_command')
         if not self.settings.participant_scheduling or not command_id or self.state.is_paused():
             return False
@@ -233,6 +310,7 @@ class Encounters:
                 raise ValueError('Inspect the unfinished encounter closing message')
         if not receipt:
             self.state.set_meta('encounter_asked', 1)
+            self.retry_later()
             application.relay._request_ai_turn(outbox_id=outbox, allow_user=True)
         self.state.set_meta('encounter_exploration_command', '')
         self.state.set_meta('encounter_finish_outbox', '')

@@ -11,7 +11,7 @@ from typing import Any, cast
 from .activity import ActivitySeverity, WorkerPhase
 from .config import Settings
 from .kindroid_api import KindroidAPIError, KindroidClient
-from .models import AgentReply, ChatMessage
+from .models import AgentReply, ChatMessage, InvalidAgentReply
 from .redaction import redact_text
 from .state import NON_SPENDING_INITIATIVE_OUTCOMES, RelayState
 from .turns import EmptyGeneratedReply, ReconciliationError, reconciliation_diagnostic
@@ -47,6 +47,9 @@ class Relay:
         self._context_synced_at = 0.0
         self.context_operation: Callable[[], bool] | None = None
         self.chosen_encounter = False
+        self.encounter_opener = None
+        self.history_requests_attempted = 0
+        self.history_rejections = 0
 
     def _event(
         self,
@@ -65,6 +68,17 @@ class Relay:
             correlation_id=correlation_id,
         )
 
+    def _start_activity_session(self, summary):
+        import uuid
+        if not self.state.get_meta('activity_session'):
+            self.state.set_meta('activity_session', uuid.uuid4().hex)
+            self._event('session_started', ActivitySeverity.INFO, summary)
+
+    def _end_activity_session(self, outcome):
+        if self.state.get_meta('activity_session'):
+            self._event('session_ended', ActivitySeverity.INFO, 'Conversation session ended', details={'outcome': outcome})
+            self.state.set_meta('activity_session', '')
+
     def _pause(self, reason: str, summary: str) -> None:
         was_paused = self.state.is_paused()
         self.state.pause(reason)
@@ -75,6 +89,7 @@ class Relay:
                 summary,
                 details={"reason": reason},
             )
+        self._end_activity_session('paused_inspect_activity')
 
     def _mark_message_processed(self, message_id: str) -> None:
         self.state.mark_message_processed(message_id)
@@ -160,6 +175,7 @@ class Relay:
                 logger.info("Waiting %.1fs before the next history request", wait)
                 time.sleep(wait)
         self.state.record_history_request(self.settings.max_history_requests_24h)
+        self.history_requests_attempted += 1
         self.state.set_meta("last_history_request_at_ms", int(time.time() * 1000))
         try:
             with self.phase_context(
@@ -174,6 +190,7 @@ class Relay:
         except KindroidAPIError as exc:
             if exc.status_code != 429:
                 raise
+            self.history_rejections += 1
             streak = self.state.get_int("history_rate_limit_streak", 0) + 1
             if exc.retry_after_seconds is not None:
                 delay = max(1, exc.retry_after_seconds)
@@ -187,10 +204,21 @@ class Relay:
             self.state.set_meta("history_last_429_at", limited_at)
             self.state.set_meta("history_cooldown_until", retry_at)
             self.state.set_meta("history_rate_limit_streak", streak)
+            # An explicit read/recovery while already paused must preserve its
+            # session and uncertainty evidence, even when the server rejects it.
+            if not self.state.is_paused():
+                with self.state.connection:
+                    self.state.connection.execute(
+                        "UPDATE shared_sessions SET status='ended',ended_at=?,reason=? WHERE status='active'",
+                        (limited_at, 'history_rate_limit'),
+                    )
+                self._end_activity_session('failed_history_rate_limit')
+                self._pause('Kindroid rejected a history read (HTTP 429); inspect before resuming',
+                            'Session failed because Kindroid rejected a history read')
             self.state.activity.add(
                 "history_rate_limited",
-                ActivitySeverity.WARNING,
-                "Kindroid history rate limit reached; polling is cooling down",
+                ActivitySeverity.ERROR,
+                "Kindroid rejected history access; session stopped, inspect before resuming",
                 details={
                     "cooldown_until": retry_at,
                     "retry_after_seconds": delay,
@@ -207,7 +235,7 @@ class Relay:
         return page
 
     def fetch_history(self, cursor: int | None) -> list[ChatMessage]:
-        """Fetch a complete budgeted window without importing or linking it."""
+        """Fetch a complete window without importing or linking it."""
         visited_cursors: set[int] = set()
         history: dict[str, ChatMessage] = {}
         # Complete pagination before associating replies: a later page may
@@ -334,19 +362,28 @@ class Relay:
 
     def run_once(self, *, initiative_now: bool = False, after_sync: Callable[[], bool] | None = None) -> int:
         self.initiative_outcome = None
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked():
+            self.initiative_outcome = 'quiet_hours'
+            return 0
         if self.state.is_paused():
             logger.info("Relay is paused: %s", self.state.get_meta("pause_reason", ""))
             if initiative_now:
                 self._skip_initiative("paused", "Check-in skipped because the relay is paused", persist=False)
             return 0
+        just_bootstrapped = False
         if self.state.get_meta("bootstrapped", "0") != "1":
             inserted = self.bootstrap()
-            logger.info("Bootstrapped %s existing messages; waiting for new activity", inserted)
-            if initiative_now:
-                self._skip_initiative("bootstrapped", "Check-in skipped while initial history was bootstrapped; trigger again to check in", persist=False)
-            return 0
+            logger.info("Bootstrapped %s existing messages without replaying old chat", inserted)
+            if not (initiative_now and self.settings.participant_scheduling):
+                if initiative_now:
+                    self._skip_initiative("bootstrapped", "Check-in skipped while initial history was bootstrapped; trigger again to check in", persist=False)
+                return 0
+            # No idle bootstrap now: the first explicit/scheduled check-in owns
+            # this initial read and can continue without a redundant second sync.
+            just_bootstrapped = True
 
-        if not (self.settings.cooperative_turns and self.state.pending_ai_messages()
+        if not just_bootstrapped and not (self.settings.cooperative_turns and self.state.pending_ai_messages()
                 and not self.state.turns.has_uncertain()
                 and time.monotonic() - self._context_synced_at < self.settings.poll_seconds):
             self.synchronize_context()
@@ -359,7 +396,7 @@ class Relay:
         if not pending:
             return 0
         with self._agent_session(pending[0].id) as agent:
-            while not self.state.is_paused():
+            while not self.state.is_paused() and not QuietHours(self.state, self.settings).blocked():
                 pending = self.state.pending_ai_messages()
                 if not pending:
                     break
@@ -376,6 +413,9 @@ class Relay:
 
     def start_conversation_now(self) -> int:
         """Start a fresh, scheduler-independent conversation for manual testing."""
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked():
+            return 0
         if self.state.is_paused():
             reason = self.state.get_meta("pause_reason", "")
             raise RuntimeError(f"Relay is paused: {reason or 'no reason recorded'}")
@@ -402,6 +442,9 @@ class Relay:
         self.state.set_meta('encounter_asked', 0)
         self.state.set_meta('encounter_choice_received', 0)
         logger.info("Manual conversation: sending a Codex opener to Kindroid")
+        self._start_activity_session('Manual conversation session started')
+        from .encounters import Encounters
+        Encounters(self.state, self.settings).retry_later()
         with self._agent_session(latest.id) as agent:
             opener = cast(
                 str,
@@ -427,6 +470,10 @@ class Relay:
     def _handle_chain(self, agent: object, incoming: ChatMessage) -> None:
         current: ChatMessage | None = incoming
         while current is not None and not self.state.is_paused():
+            from .quiet_hours import QuietHours
+            if QuietHours(self.state, self.settings).blocked():
+                return
+            self._start_activity_session('Conversation session started')
             # A history cooldown can end a chain immediately after generation,
             # before the usual post-generation limit check runs.
             if self.state.get_int("consecutive_turns", 0) >= self.settings.max_consecutive_turns:
@@ -459,15 +506,25 @@ class Relay:
                     current.id,
                 )
             else:
-                reply = cast(
-                    AgentReply,
-                    self._call_codex(
-                        "reply",
-                        lambda: agent.reply_to(current),  # type: ignore[attr-defined]
-                        details={"message_id": current.id},
-                        correlation_id=current.id,
-                    ),
-                )
+                try:
+                    reply = cast(
+                        AgentReply,
+                        self._call_codex(
+                            "reply",
+                            lambda: agent.reply_to(current),  # type: ignore[attr-defined]
+                            details={"message_id": current.id},
+                            correlation_id=current.id,
+                        ),
+                    )
+                except InvalidAgentReply:
+                    if not self.settings.participant_scheduling:
+                        raise
+                    from .encounters import Encounters
+                    Encounters(self.state, self.settings).retry_later()
+                    self._mark_message_processed(current.id)
+                    self.state.set_meta('consecutive_turns', 0)
+                    self._end_activity_session('invalid_agent_reply')
+                    return
                 if self.settings.participant_scheduling:
                     reply = self._encounter_reply(current, reply)
                 if reply.action:
@@ -491,6 +548,7 @@ class Relay:
 
                 if not reply.reply:
                     self._mark_message_processed(current.id)
+                    self._end_activity_session('no_reply')
                     return
 
                 body = self._outbound_body(self._limit_reply(reply.reply))
@@ -530,6 +588,7 @@ class Relay:
 
             if not request_kindroid_reply:
                 self.state.set_meta("consecutive_turns", 0)
+                self._end_activity_session('completed')
                 return
 
             try:
@@ -546,6 +605,8 @@ class Relay:
                 logger.warning("Automatic turn limit reached; relay paused")
                 return
             current = next_message
+            if current is None:
+                self._end_activity_session('companion_did_not_take_turn')
             if self.settings.cooperative_turns:
                 return
 
@@ -559,20 +620,21 @@ class Relay:
                 receipt = encounters.choose(current, reply.next_encounter)
             except (ValueError, TypeError, OverflowError):
                 # Do not publish a model's unsupported scheduling promise.
-                return replace(reply, reply='I could not save that timing. When would you like the next encounter, with a time or delay?',
-                               request_kindroid_reply=True, explore=False)
+                row = encounters.retry_later()
+                note = Encounters.receipt(row) if row else ''
+                return replace(reply, reply='I could not save that timing. ' + note,
+                               request_kindroid_reply=False, explore=False)
             self.state.set_meta('encounter_choice_received', 1)
             reply = replace(reply, reply=receipt + '\n\n' + reply.reply)
-        if reply.explore and self.settings.exploration_enabled and encounters.attributed(current):
-            encounters.prepare_exploration(current)
-            # The following invitation carries the questions. Avoid another
-            # ordinary reply generation racing the queued invitation.
-            return replace(reply, reply=(receipt + '\n\n' if receipt else '') + 'Let us explore some ideas together.', request_kindroid_reply=False)
         if (not reply.request_kindroid_reply and not self.state.get_int('encounter_asked')
                 and not self.state.get_int('encounter_choice_received')):
             self.state.set_meta('encounter_asked', 1)
-            return replace(reply, reply=reply.reply + '\n\nWhen would you like our next check-in? We can also explore new ideas then if you feel like it.',
+            encounters.retry_later()
+            return replace(reply, reply=reply.reply + '\n\nWhen would you like our next check-in?',
                            request_kindroid_reply=True)
+        if self.state.get_int('encounter_asked') and not self.state.get_int('encounter_choice_received'):
+            row = encounters.retry_later()
+            return replace(reply, reply=Encounters.receipt(row), request_kindroid_reply=False, explore=False)
         return reply
 
     def _limit_reply(self, reply: str) -> str:
@@ -873,6 +935,8 @@ class Relay:
         return message
 
     def _schedule_initiative(self, *, base_at: int | None = None) -> None:
+        if self.settings.participant_scheduling:
+            return
         from .schedule import saved_schedule
         if saved_schedule(self.state, self.settings.group_id) is not None:
             return
@@ -941,7 +1005,7 @@ class Relay:
     def _maybe_offer_initiative(self, *, force_due: bool = False) -> bool:
         from .encounters import Encounters
         if (self.settings.room_mode == 'shared' or
-                (Encounters(self.state, self.settings).controls_schedule() and not self.chosen_encounter)):
+                (Encounters(self.state, self.settings).controls_schedule() and not self.chosen_encounter and not force_due)):
             if force_due:
                 self._skip_initiative('participant_schedule', 'The selected next encounter governs this room', persist=False)
             return False
@@ -992,11 +1056,11 @@ class Relay:
         self._schedule_initiative()
         if self.state.pending_ai_messages():
             self._set_initiative_outcome("pending_message")
-            logger.info("Initiative check skipped because Hannah already has a pending message")
+            logger.info("Initiative check skipped because %s already has a pending message", self.settings.kindroid_display_name)
             self._event(
                 "initiative_skipped",
                 ActivitySeverity.INFO,
-                "Initiative check skipped because a Hannah message is pending",
+                f"Initiative check skipped because a message from {self.settings.kindroid_display_name} is pending",
                 details={"outcome": "pending_message"},
             )
             return False
@@ -1010,7 +1074,7 @@ class Relay:
                 details={"outcome": "empty_room"},
             )
             return False
-        # Initiation is independent of turn ownership. A processed Hannah reply
+        # Initiation is independent of turn ownership. A processed companion reply
         # or a Marc message can end a conversation just as a Codex reply can.
         # Keep the idle check separate from pending-message/delivery safety.
         if self.state.connection.execute(
@@ -1042,24 +1106,30 @@ class Relay:
         self.state.set_meta('encounter_asked', 0)
         self.state.set_meta('encounter_choice_received', 0)
         logger.info("Initiative check: sending a Codex check-in")
-        with self._agent_session(latest.id) as agent:
-            check_in = cast(
-                str,
-                self._call_codex(
-                    "scheduled check-in",
-                    lambda: agent.scheduled_check_in(latest),  # type: ignore[attr-defined]
-                    details={"message_id": latest.id},
-                    correlation_id=latest.id,
-                ),
-            )
+        self._start_activity_session('Check-in session started')
+        from .encounters import Encounters
+        if self.encounter_opener:
+            check_in = self.encounter_opener
+        else:
+            with self._agent_session(latest.id) as agent:
+                check_in = cast(
+                    str,
+                    self._call_codex(
+                        "scheduled check-in",
+                        lambda: agent.scheduled_check_in(latest),  # type: ignore[attr-defined]
+                        details={"message_id": latest.id},
+                        correlation_id=latest.id,
+                    ),
+                )
         if guard and (reason := guard()):
             return self._skip_initiative(reason, 'Scheduled check-in expired during preparation', persist=False)
+        Encounters(self.state, self.settings).retry_later()
         outbox_id = self._send_user_message(self._limit_reply(check_in))
         self._set_initiative_outcome("check_in_sent")
         self._event(
             "initiative_offered",
             ActivitySeverity.INFO,
-            "Scheduled check-in offered to Hannah",
+            f"Scheduled check-in offered to {self.settings.kindroid_display_name}",
             details={"outcome": "check_in_sent"},
         )
 
@@ -1070,26 +1140,30 @@ class Relay:
             return False
         if message is None:
             self._set_initiative_outcome("check_in_sent_user_turn")
-            logger.info("Hannah did not take the offered check-in turn")
+            logger.info("%s did not take the offered check-in turn", self.settings.kindroid_display_name)
             self._event(
                 "initiative_declined",
                 ActivitySeverity.INFO,
-                "Hannah did not take the offered check-in turn",
+                f"{self.settings.kindroid_display_name} did not take the offered check-in turn",
                 details={"outcome": "user_turn"},
             )
+            self._end_activity_session('companion_did_not_take_turn')
             return False
         self._set_initiative_outcome("check_in_answered")
-        logger.info("Hannah answered the scheduled check-in")
+        logger.info("%s answered the scheduled check-in", self.settings.kindroid_display_name)
         self._event(
             "initiative_answered",
             ActivitySeverity.INFO,
-            "Hannah answered the scheduled check-in",
+            f"{self.settings.kindroid_display_name} answered the scheduled check-in",
             details={"message_id": message.id, "outcome": "answered"},
             correlation_id=message.id,
         )
         return True
 
     def _inside_quiet_hours(self) -> bool:
+        if self.settings.participant_scheduling:
+            from .quiet_hours import QuietHours
+            return QuietHours(self.state, self.settings).blocked()
         quiet = self.settings.initiative_quiet_hours
         if quiet is None:
             return False
@@ -1102,20 +1176,15 @@ class Relay:
         return current >= start or current < end
 
     def run_forever(self) -> None:
-        logger.info(
-            "Relay started; polling every %s-%s seconds while idle",
-            self.settings.poll_seconds,
-            self.settings.idle_poll_seconds,
-        )
-        if self.settings.poll_seconds < 145:
-            logger.warning(
-                "Polling below 145 seconds can exceed Kindroid's 600 history requests/24h limit; "
-                "use this setting only for a short test"
-            )
+        logger.info("Relay started; passive chat monitoring is off")
         while True:
             handled = 0
             try:
-                handled = self.run_once()
+                due = self.state.get_int('initiative_due_at')
+                if self.state.has_active_conversation_work() or (
+                        not self.settings.participant_scheduling and self.settings.initiative_enabled
+                        and due and due <= time.time()):
+                    handled = self.run_once()
             except KeyboardInterrupt:
                 raise
             except HistoryCooldownError as exc:
@@ -1148,6 +1217,7 @@ class Relay:
             self._send_user_message(self._limit_reply(body),
                 outbox_created=lambda oid: self.state.set_meta('shared_result_outbox', oid))
             return  # The shared session owns continuation and speaker selection.
+        self._start_activity_session('Approved result conversation started')
         outbox_id = self._send_user_message(self._limit_reply(body))
         try:
             self._request_ai_turn(outbox_id=outbox_id, allow_user=False)

@@ -10,7 +10,7 @@ from kindroid_relay.activity import WorkerPhase
 from kindroid_relay.application import RelayApplication
 from kindroid_relay.command_queue import CommandStatus, CommandType
 from kindroid_relay.migrations import migrate_database
-from kindroid_relay.models import AgentReply
+from kindroid_relay.models import AgentReply, ChatMessage
 from kindroid_relay.state import RelayState, RelayStateFactory
 from kindroid_relay.worker import RelayWorker, request_pause
 
@@ -174,7 +174,7 @@ def test_scoped_worker_phase_restores_command_context_after_failure(
         assert restored.active_command_id == queued.id
 
 
-def test_worker_records_complete_poll_cycle(tmp_path: Path) -> None:
+def test_worker_records_complete_active_session_cycle(tmp_path: Path) -> None:
     config = replace(
         settings(tmp_path),
         worker_heartbeat_seconds=1,
@@ -192,6 +192,9 @@ def test_worker_records_complete_poll_cycle(tmp_path: Path) -> None:
             wake.set()
             return 0
 
+    with RelayState(config.state_path) as state:
+        state.set_meta('activity_session', 'fixture-session')
+        state.add_message(config.group_id, ChatMessage('pending', 'ai1', 'ai', 'Hannah', 1, 'Fixture'))
     worker = RelayWorker(
         config,
         stop_event=stop,
@@ -413,6 +416,9 @@ def test_polling_finishes_before_queued_manual_command_external_effects(
                 return super().reply_to(message)
 
     kindroid = BlockingKindroid()
+    with factory.connect() as state:
+        state.set_meta('activity_session', 'fixture-session')
+        state.add_message(config.group_id, kindroid.messages[0])
     worker = complete_application_worker(
         config, kindroid, TrackedConversationAgent()
     )

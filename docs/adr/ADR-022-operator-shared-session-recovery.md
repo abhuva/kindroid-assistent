@@ -1,5 +1,9 @@
 # ADR-022: Operator-directed recovery of an interrupted shared session
 
+History policy update (2026-09-11): [ADR-026](ADR-026-advisory-daily-history-measurement.md)
+supersedes local hard/rolling history limits with daily UTC advisory measurement.
+Actual history 429 now fails the session and pauses its room; cooldown remains.
+
 **Status:** Accepted | **Date:** 2026-09-11
 **Participants:** Marc, Codex
 

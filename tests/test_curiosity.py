@@ -169,7 +169,7 @@ def test_due_slot_reserves_command_and_advances_once(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('reason', ['paused', 'not_bootstrapped', 'pending_message', 'recent_conversation',
-    'history_cooldown', 'history_budget', 'delivery_unresolved', 'social_check_in_due', 'quiet_hours',
+    'history_cooldown', 'delivery_unresolved', 'social_check_in_due', 'quiet_hours',
     'attention_budget', 'command_conflict', 'empty_room'])
 def test_skips_are_recorded_without_history_or_sends(tmp_path, monkeypatch, reason):
     config, state, remote, _, scheduler, now = ready(tmp_path, monkeypatch)
@@ -179,7 +179,6 @@ def test_skips_are_recorded_without_history_or_sends(tmp_path, monkeypatch, reas
         elif reason == 'pending_message': state.add_message('g1', ChatMessage('pending', 'ai1', 'ai', 'Hannah', now[0], 'Fixture'), processed=False)
         elif reason == 'recent_conversation': state.add_message('g1', ChatMessage('recent', 'user', 'user', 'Marc', now[0] * 1000, 'Fixture'), processed=True)
         elif reason == 'history_cooldown': state.set_meta('history_cooldown_until', now[0] + 100)
-        elif reason == 'history_budget': config = replace(config, max_history_requests_24h=1)
         elif reason == 'delivery_unresolved': state.create_outbox('Fixture')
         elif reason == 'social_check_in_due':
             config = replace(config, initiative_enabled=True)

@@ -76,7 +76,7 @@ def test_empty_http_200_recovers_once_through_real_adapter(tmp_path, blank_recor
 
 @pytest.mark.parametrize("operation", ["manual", "initiative", "approval"])
 def test_empty_reply_recovery_applies_to_every_generation_entry_point(tmp_path, operation):
-    config = settings(tmp_path)
+    config = replace(settings(tmp_path), max_history_requests_24h=1)
     remote = EmptyBodyKindroid()
     remote.messages = [ChatMessage("u0", "user", "user", "Codex Test", 1, "Previous reply")]
     class Agent:
@@ -106,10 +106,10 @@ def test_empty_reply_recovery_applies_to_every_generation_entry_point(tmp_path, 
         assert not state.turns.has_uncertain()
 
 
-@pytest.mark.parametrize("failure", ["missing", "ambiguous", "wrong_ai", "history_error", "budget"])
+@pytest.mark.parametrize("failure", ["missing", "ambiguous", "wrong_ai", "history_error"])
 def test_empty_reply_fallback_never_retries_or_accepts_unconfirmed_reply(tmp_path, failure):
     config = replace(settings(tmp_path), initiative_enabled=False,
-                     max_history_requests_24h=2 if failure == "budget" else 100)
+                     max_history_requests_24h=1)
     remote = EmptyBodyKindroid()
     generate = remote.generate_ai_response
     history = remote.get_messages_page
@@ -139,12 +139,12 @@ def test_empty_reply_fallback_never_retries_or_accepts_unconfirmed_reply(tmp_pat
         assert remote.generation_count == 1
         assert agent.calls == 1
         assert len(remote.sent) == 1
-        assert remote.history_requests == (2 if failure == "budget" else 3)
+        assert remote.history_requests == 3
         assert "PRIVATE_RESPONSE_SENTINEL" not in repr(state.activity.after())
 
 
 @pytest.mark.parametrize("turn_limit", [1, 4])
-def test_empty_reply_cooldown_defers_recovery_and_preserves_turn_limit(tmp_path, turn_limit):
+def test_empty_reply_429_stops_session_until_explicit_recovery_and_resume(tmp_path, turn_limit):
     config = replace(settings(tmp_path), initiative_enabled=False, max_consecutive_turns=turn_limit)
     remote = EmptyBodyKindroid()
     history = remote.get_messages_page
@@ -159,7 +159,7 @@ def test_empty_reply_cooldown_defers_recovery_and_preserves_turn_limit(tmp_path,
         relay = Relay(config, state, remote, lambda: nullcontext(agent))
         relay.bootstrap(respond_to_latest=True)
         assert relay.run_once() == 1
-        assert not state.is_paused()
+        assert state.is_paused()
         assert state.turns.has_uncertain()
         assert state.get_int("history_cooldown_until") > 0
         assert remote.history_requests == 3
@@ -168,11 +168,15 @@ def test_empty_reply_cooldown_defers_recovery_and_preserves_turn_limit(tmp_path,
         state.set_meta("history_cooldown_until", 0)
         remote.get_messages_page = history
         relay = Relay(config, state, remote, lambda: nullcontext(agent))
+        relay.synchronize_context()  # Explicit read reconciles, but does not resume.
+        assert state.is_paused()
+        assert state.get_int('consecutive_turns') == 1
+        state.resume()
         relay.run_once()
         assert remote.generation_count == 1
         assert not state.turns.has_uncertain()
-        assert state.is_paused() == (turn_limit == 1)
-        assert len(remote.sent) == (1 if turn_limit == 1 else 2)
+        assert not state.is_paused()
+        assert len(remote.sent) == 2
 
 
 def test_empty_reply_recovery_respects_minimum_history_spacing(tmp_path, monkeypatch):
@@ -254,4 +258,4 @@ def test_entry_point_cooldown_retains_successful_send_outcome(tmp_path, operatio
         assert len(remote.sent) == 1
         assert remote.generation_count == 1
         assert state.turns.has_uncertain()
-        assert not state.is_paused()
+        assert state.is_paused()

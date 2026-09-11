@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class InvalidAgentReply(ValueError):
+    """The model finished but did not supply a usable structured reply."""
+
+
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
     id: str

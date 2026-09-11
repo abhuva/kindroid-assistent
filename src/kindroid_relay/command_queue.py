@@ -13,6 +13,7 @@ from .config import DASHBOARD_INITIATIVE_LIMIT_MAX
 
 
 class CommandType(str, Enum):
+    SET_QUIET_HOURS = 'set_quiet_hours'
     RECOVER_SHARED = 'recover_shared'
     CHOSEN_ENCOUNTER = 'chosen_encounter'
     SET_ENCOUNTER = 'set_encounter'
@@ -42,6 +43,15 @@ class CommandType(str, Enum):
     SCHEDULED_EXPLORATION = "scheduled_exploration"
     SCHEDULED_CHECK_IN = "scheduled_check_in"
     SET_SCHEDULE = "set_schedule"
+
+
+# Retained command identities allow old queue entries to finish without effects.
+RETIRED_SCHEDULING_COMMANDS = frozenset({
+    CommandType.SET_SCHEDULE, CommandType.SET_SHARED_SCHEDULE, CommandType.START_SHARED,
+    CommandType.SCHEDULED_CHECK_IN, CommandType.SCHEDULED_EXPLORATION,
+    CommandType.START_EXPLORATION, CommandType.INTERPRET_EXPLORATION,
+    CommandType.SET_DISCOVERY, CommandType.APPROVE_PUBLIC_TOPIC,
+})
 
 
 class CommandStatus(str, Enum):
@@ -136,6 +146,12 @@ def validate_payload(
     payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
     value = dict(payload or {})
+    if command_type == CommandType.SET_QUIET_HOURS:
+        from .quiet_hours import validate_quiet_hours
+        try:
+            return validate_quiet_hours(value)
+        except ValueError as exc:
+            raise CommandValidationError(str(exc)) from exc
     if command_type == CommandType.RECOVER_SHARED:
         if (set(value) != {'session_id', 'turn_id', 'confirm'} or value['confirm'] is not True
                 or any(not isinstance(value[k], str) or not 1 <= len(value[k]) <= 128
@@ -348,12 +364,13 @@ class CommandStore:
             raise
         return self._record(row), True
 
-    def claim_next(self) -> CommandRecord | None:
+    def claim_next(self, *, exclude: frozenset[CommandType] = frozenset()) -> CommandRecord | None:
         try:
             self.connection.execute("BEGIN IMMEDIATE")
             row = self.connection.execute(
                 "SELECT * FROM commands WHERE status = 'queued' "
-                "ORDER BY requested_at, rowid LIMIT 1"
+                + ("AND command_type NOT IN (" + ','.join('?' for _ in exclude) + ") " if exclude else '')
+                + "ORDER BY requested_at, rowid LIMIT 1", tuple(item.value for item in exclude)
             ).fetchone()
             if row is None:
                 self.connection.commit()

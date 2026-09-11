@@ -120,6 +120,10 @@
 
   function scheduleView(snapshot) {
     const schedule = snapshot.schedule;
+    if (schedule.participant_scheduling) {
+      return { basis: schedule.initiative_enabled ? "Kin-chosen check-ins · six-hour fallback" : "Automatic check-ins disabled",
+        quietHours: "No companion quiet hours enabled" };
+    }
     if (schedule.daily?.configured) {
       const config = schedule.daily.config;
       return { basis: config.enabled ? `Shared schedule: every ${config.tick_minutes || 60} minutes (Schedule tab)` : "Scheduled activities off",
@@ -146,9 +150,11 @@
     return {
       warning: ratio >= 0.8,
       text: `${used} / ${maximum}`,
-      note: ratio >= 0.8
-        ? "Approaching the local history-read safety limit. Kindroid’s server-side count may differ."
-        : "Local relay count; Kindroid’s server-side count may differ.",
+      note: (ratio >= 1
+        ? "Local warning threshold reached; requests remain enabled. "
+        : ratio >= 0.8 ? "Approaching the local warning threshold; requests remain enabled. "
+        : "Measurement only; requests remain enabled. ")
+        + "Kindroid’s server-side count may differ.",
     };
   }
 

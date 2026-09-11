@@ -7,10 +7,11 @@ from .encounters import Encounters
 from .schedule import DailyScheduler, effective_settings
 from .curiosity import CuriosityScheduler
 from .shared import SharedConversation
-from .state import RelayStateFactory, HistoryBudgetError
-from .relay import HistoryCooldownError
+from .state import RelayStateFactory
+from .relay import HistoryCooldownError, Relay
 from .turns import ReconciliationPending
 from .worker import RelayWorker
+from .quiet_hours import QuietHours, deferred_commands
 
 
 class RoomWorker(RelayWorker):
@@ -45,7 +46,11 @@ class RoomWorker(RelayWorker):
                         app.settings = effective_settings(state, worker.settings)
                         app.relay.settings = app.settings
                         try:
-                            command = state.commands.claim_next()
+                            quiet = QuietHours(state, app.settings).blocked()
+                            if worker._sync_startup_history(state, app):
+                                worked = True
+                                continue
+                            command = state.commands.claim_next(exclude=deferred_commands() if quiet else frozenset())
                             if command:
                                 worker._run_command(state, app, command)
                                 entry[3] = time.time() + (0 if app.settings.room_mode == 'shared' else app.settings.poll_seconds)
@@ -55,19 +60,22 @@ class RoomWorker(RelayWorker):
                             if state.is_paused():
                                 worker._phase(state, WorkerPhase.PAUSED)
                                 continue
+                            if quiet:
+                                worker._phase(state, WorkerPhase.IDLE, note='Companion quiet hours; automatic work is waiting')
+                                continue
                             if time.time() < blocked_until.get(worker.settings.room_key, 0):
                                 continue
                             shared = SharedConversation(app)
                             encounters = Encounters(state, app.settings)
-                            if shared.tick() or encounters.tick() or DailyScheduler(state, app.settings).tick() or CuriosityScheduler(state, app.settings).tick():
+                            if encounters.tick() or (not app.settings.participant_scheduling and (
+                                    shared.tick() or DailyScheduler(state, app.settings).tick() or CuriosityScheduler(state, app.settings).tick())):
                                 worked = True
                                 continue
                             if app.settings.room_mode == 'shared':
                                 if time.time() >= entry[3]:
                                     worked = shared.step() or worked
                                 continue
-                            pending = bool(state.pending_ai_messages())
-                            if time.time() >= next_poll or pending:
+                            if state.has_active_conversation_work():
                                 if state.get_int('history_cooldown_until') > time.time():
                                     continue
                                 worker._phase(state, WorkerPhase.POLLING)
@@ -75,19 +83,24 @@ class RoomWorker(RelayWorker):
                                 entry[3] = time.time() + worker._poll_delay(handled)
                                 worked = True
                             else:
-                                worker._phase(state, WorkerPhase.IDLE)
-                                if app.settings.memory_enabled and time.time() + app.settings.memory_extraction_timeout_seconds < next_poll:
+                                worker._phase(state, WorkerPhase.IDLE, note='Waiting for a scheduled check-in or manual start; chat monitoring is off')
+                                choice = encounters.current()
+                                next_encounter = choice['due_at'] if choice and choice['status'] in {'pending', 'queued', 'missed'} else None
+                                if (app.settings.memory_enabled and (not next_encounter or
+                                        time.time() + app.settings.memory_extraction_timeout_seconds < next_encounter)):
                                     try:
                                         app.memory.automatic_tick()
                                     except Exception:
                                         pass  # Optional capture cannot pause normal conversation.
-                        except (HistoryCooldownError, HistoryBudgetError, ReconciliationPending):
+                        except (HistoryCooldownError, ReconciliationPending):
                             entry[3] = max(time.time() + app.settings.poll_seconds,
                                            state.get_int('history_cooldown_until'))
                             blocked_until[worker.settings.room_key] = entry[3]
                             worker._phase(state, WorkerPhase.DEGRADED, note='Waiting for history allowance or confirmation')
                         except Exception as exc:
                             # A failed room cannot monopolize the worker or expose remote bodies.
+                            if isinstance(app.relay, Relay):
+                                app.relay._end_activity_session('failed_inspect_activity')
                             state.activity.add('room_work_failed', ActivitySeverity.ERROR,
                                 'Room work failed; inspect its state before resuming',
                                 details={'error_type': type(exc).__name__})

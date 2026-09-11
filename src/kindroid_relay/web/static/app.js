@@ -143,7 +143,7 @@ function renderCurrentActivity() {
   const command = [...commands.values()].find((item) => item.status === "running")
     || [...commands.values()].find((item) => item.status === "queued");
   const phase = worker?.phase || "unavailable";
-  const labels = { waiting_for_kindroid: "Waiting for Kindroid", running_codex: "Waiting for Codex", sending: "Sending to Kindroid", idle: "Waiting for the next poll", polling: "Checking conversation", degraded: "Degraded operation", paused: "Paused", stopping: "Worker stopped", executing_approval: "Executing approved action", starting: "Worker starting" };
+  const labels = { waiting_for_kindroid: "Waiting for Kindroid", running_codex: "Waiting for Codex", sending: "Sending to Kindroid", idle: "Waiting for a check-in or manual start", polling: "Checking conversation", degraded: "Degraded operation", paused: "Paused", stopping: "Worker stopped", executing_approval: "Executing approved action", starting: "Worker starting" };
   byId("current-activity").textContent = `${labels[phase] || "Worker unavailable"}${command ? ` · ${command.command_type.replaceAll("_", " ")} (${command.status})` : ""}`;
   const start = command?.started_at || command?.requested_at || worker?.phase_started_at;
   const end = Date.parse(latestSnapshot.server_time);
@@ -298,7 +298,10 @@ function renderSnapshot(data) {
     }
   }
   byId("initiative-schedule").textContent = scheduleView.basis;
-  byId("quiet-hours").textContent = scheduleView.quietHours;
+  const companionQuiet = (data.schedule.companion_quiet_hours || []).filter(person => person.enabled);
+  byId("quiet-hours").textContent = companionQuiet.length
+    ? companionQuiet.map(person => `${person.name}: ${person.start}–${person.end}`).join(' · ')
+    : scheduleView.quietHours;
   const quota = RelayUiModel.quotaView(
     data.relay.history_requests_24h,
     data.schedule.history_request_limit_24h,
@@ -306,6 +309,9 @@ function renderSnapshot(data) {
   byId("history-budget").textContent = quota.text;
   const quotaNote = byId("history-budget-note");
   quotaNote.textContent = quota.note;
+  if (data.relay.history_window_reset_at) {
+    quotaNote.textContent += ` Local counter resets at ${new Date(data.relay.history_window_reset_at * 1000).toLocaleString()} (00:00 UTC).`;
+  }
   quotaNote.className = `quota-note ${quota.warning ? "warning" : ""}`;
   const cooldownUntil = Number(data.relay.history_cooldown_until || 0);
   const cooldownActive = cooldownUntil * 1000 > Date.now();
@@ -335,6 +341,16 @@ function appendActivity(items) {
   renderActivity();
 }
 
+document.querySelectorAll('[data-room-url]').forEach(button => {
+  button.addEventListener('click', () => {
+    if (button.getAttribute('aria-pressed') === 'true') return;
+    window.location.assign(button.dataset.roomUrl);
+  });
+});
+
+const expandedActivityGroups = new Set();
+byId('activity-view').addEventListener('change', renderActivity);
+
 function renderActivity() {
   const list = byId("activity-list");
   list.replaceChildren();
@@ -342,7 +358,16 @@ function renderActivity() {
   const kind = byId("activity-kind").value;
   const related = byId("activity-related").value.trim();
   const items = [...activities.values()].sort((a, b) => a.id - b.id);
+  const groups = new Map();
+  let legacy = null;
   for (const item of items) {
+    if (byId('activity-view').value === 'grouped' && !severity && !kind && !related
+        && ['worker_phase', 'message_processed', 'command_queued'].includes(item.kind)
+        && !item.details.session_id) continue;
+    if (['command_started', 'relay_cycle_started', 'initiative_due'].includes(item.kind)) legacy = item.details.command_id || `event-${item.id}`;
+    const groupKey = item.details.session_id || item.details.command_id || legacy || `event-${item.id}`;
+    const endLegacy = ['command_completed', 'command_failed', 'command_interrupted', 'relay_cycle_completed', 'relay_cycle_failed'].includes(item.kind);
+    if (endLegacy) legacy = null;
     if (severity && item.severity !== severity || kind && item.kind !== kind) continue;
     if (related && item.correlation_id !== related && !Object.values(item.details).includes(related)) continue;
     const li = document.createElement("li");
@@ -361,8 +386,39 @@ function renderActivity() {
     }
     if (item.correlation_id && !Object.values(item.details).includes(item.correlation_id)) refs.append(activityLink(item.correlation_id));
     li.append(refs);
-    list.prepend(li);
+    if (byId('activity-view').value === 'events') { list.prepend(li); continue; }
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push({ item, li });
   }
+  const orderedGroups = [...groups.entries()].sort((a, b) => b[1].at(-1).item.id - a[1].at(-1).item.id);
+  for (const [key, rows] of orderedGroups) {
+    const first = rows[0].item, last = rows.at(-1).item;
+    const start = rows.find(row => /session_started|command_started|relay_cycle_started|initiative_due/.test(row.item.kind))?.item;
+    const terminal = rows.findLast(row => /session_ended|command_completed|command_failed|command_interrupted|relay_cycle_completed|relay_cycle_failed/.test(row.item.kind))?.item;
+    const warning = rows.findLast(row => ['warning', 'error'].includes(row.item.severity))?.item;
+    const wrapper = document.createElement('li');
+    const details = document.createElement('details');
+    details.className = 'activity-group'; details.dataset.groupId = key;
+    details.open = expandedActivityGroups.has(key) || !!related;
+    details.addEventListener('toggle', () => {
+      if (!details.isConnected) return;
+      if (details.open) expandedActivityGroups.add(key); else expandedActivityGroups.delete(key);
+    });
+    const summary = document.createElement('summary');
+    summary.append(`${localTime((start || first).created_at)} · ${(start || first).summary}`);
+    const result = terminal || warning;
+    const outcome = element('span', result ? `${result.summary}${result.details.outcome ? ' · ' + result.details.outcome : ''}`
+      : start ? 'No outcome in retained events · latest: ' + last.summary : last.summary, 'group-outcome');
+    if (warning) {
+      outcome.classList.add(warning.severity);
+      if (result !== warning) outcome.append(' · Attention: ' + warning.summary);
+    }
+    summary.append(outcome, element('small', ` · ${rows.length} events`));
+    const children = document.createElement('ol');
+    for (const row of [...rows].reverse()) children.append(row.li);
+    details.append(summary, children); wrapper.append(details); list.append(wrapper);
+  }
+  for (const key of expandedActivityGroups) if (!groups.has(key)) expandedActivityGroups.delete(key);
   byId("activity-empty").hidden = list.children.length > 0;
 }
 

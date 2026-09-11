@@ -55,6 +55,13 @@ class RelayApplication:
         self.relay.context_operation = self._advance_context
 
     def _advance_context(self) -> bool:
+        if self.settings.participant_scheduling:
+            from .retired_exploration import retire_safe_work
+            retire_safe_work(self.state, self.settings)
+            return False  # Retain history, but do not send retired follow-ups.
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked():
+            return False
         from .encounters import Encounters
         return (self.exploration.advance(synchronized=True) or self.experiences.advance()
                 or Encounters(self.state, self.settings).finish_exploration(self))
@@ -76,14 +83,13 @@ class RelayApplication:
             return int(SharedConversation(self).step())
         return self.relay.run_once()
 
-    def sync_history(self, command_id: str) -> dict[str, Any]:
+    def sync_history(self, command_id: str | None) -> dict[str, Any]:
         """Worker-owned history read/reconciliation, even while paused; never reply."""
         from .kindroid_api import KindroidAPIError
         from .relay import HistoryCooldownError
-        from .state import HistoryBudgetError
         from .turns import ReconciliationError, ReconciliationPending, reconciliation_diagnostic
 
-        requests_before = self.state.history_request_count()
+        requests_before = self.relay.history_requests_attempted
         def count_messages() -> int:
             return self.state.connection.execute(
                 'SELECT COUNT(*) FROM messages WHERE group_id=?', (self.settings.group_id,)
@@ -100,8 +106,6 @@ class RelayApplication:
         except HistoryCooldownError as exc:
             outcome = 'history_cooldown'
             result['retry_at'] = exc.retry_at
-        except HistoryBudgetError:
-            outcome = 'history_budget'
         except ReconciliationPending as exc:
             outcome = 'history_pending'
             result.update(reconciliation_diagnostic(exc))
@@ -114,24 +118,33 @@ class RelayApplication:
             'synced': 'Kindroid history synchronized; no reply requested',
             'bootstrapped': 'Initial Kindroid history imported without replaying old messages',
             'history_cooldown': 'History sync blocked by Kindroid API cooldown',
-            'history_budget': 'History sync blocked by the rolling history-read budget',
             'history_pending': 'History fetched but a local message is not yet confirmed; sync remains incomplete',
             'reconciliation_unresolved': 'History fetched but delivery or generation remains ambiguous; inspect before resuming',
             'history_error': 'Kindroid history request failed; no automatic retry',
         }
         result.update(sync_outcome=outcome, messages_added=count_messages() - messages_before,
-                      history_requests=max(0, self.state.history_request_count() - requests_before),
+                      history_requests=self.relay.history_requests_attempted - requests_before,
                       synced_at=self.state.get_int('context_synced_at', 0), paused=self.state.is_paused())
         self.state.activity.add('history_sync',
             ActivitySeverity.INFO if outcome in {'synced', 'bootstrapped'} else ActivitySeverity.WARNING,
-            summaries[outcome] + ('; ' + result['reason_detail'] if 'reason_detail' in result else ''),
-            details={'command_id': command_id, 'outcome': outcome,
-                                        'request_count': result['history_requests']}, correlation_id=command_id)
+            ('Startup: ' if command_id is None else '') + summaries[outcome]
+            + ('; ' + result['reason_detail'] if 'reason_detail' in result else ''),
+            details={**({'command_id': command_id} if command_id is not None else {}),
+                     'reason': 'startup' if command_id is None else 'manual', 'outcome': outcome,
+                     'request_count': result['history_requests']}, correlation_id=command_id)
         return result
 
     def trigger_initiative(self) -> dict[str, Any]:
         if self.settings.room_mode == 'shared':
-            return {'handled': 0, 'initiative_outcome': 'shared_room', 'check_in_sent': False}
+            if not self.settings.participant_scheduling:
+                return {'handled': 0, 'initiative_outcome': 'shared_room', 'check_in_sent': False}
+            import uuid
+            from .shared import SharedConversation
+            result = SharedConversation(self).start(uuid.uuid4().hex,
+                opener='Would you like to spend some time together now, or choose another time?')
+            sent = result['outcome'] == 'started'
+            return {**result, 'handled': int(sent), 'initiative_outcome': 'check_in_sent' if sent else result['outcome'],
+                    'check_in_sent': sent}
         handled = self.relay.trigger_initiative_now()
         outcome = self.relay.initiative_outcome or "unknown"
         return {
@@ -152,7 +165,7 @@ class RelayApplication:
 
     def start_scheduled_exploration(self, command_id: str) -> dict[str, Any]:
         if self.settings.participant_scheduling:
-            return self.start_scheduled_check_in(command_id)
+            return {'scheduled_outcome': 'retired', 'invitations': 0}
         from .curiosity import CuriosityScheduler
         scheduler = CuriosityScheduler(self.state, self.settings)
         reason = scheduler.guard(command_id)
@@ -169,6 +182,8 @@ class RelayApplication:
         return {**result, 'scheduled_outcome': outcome}
 
     def start_scheduled_check_in(self, command_id: str) -> dict[str, Any]:
+        if self.settings.participant_scheduling:
+            return {'scheduled_outcome': 'retired', 'check_in_sent': False}
         from .schedule import DailyScheduler
         from .relay import HistoryCooldownError
         scheduler = DailyScheduler(self.state, self.settings)
@@ -198,6 +213,11 @@ class RelayApplication:
         return result
 
     def start_exploration(self, command_id: str, *, scheduled: bool = False) -> dict[str, Any]:
+        if self.settings.participant_scheduling:
+            return {'scheduled_outcome': 'retired', 'invitations': 0}
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked():
+            return {'scheduled_outcome': 'quiet_hours', 'invitations': 0}
         if self.settings.room_mode == 'shared':
             raise ValueError('Shared rooms use companion sessions; exploration invitations belong to private encounters')
         from .agency import AgencyStore, invitation, select_stimuli
@@ -264,6 +284,8 @@ class RelayApplication:
         return {'session_id': command_id, 'status': store._session(command_id)['status'], 'invitations': 1}
 
     def interpret_exploration(self, command_id: str, session_id: str) -> dict[str, Any]:
+        if self.settings.participant_scheduling:
+            return {'outcome': 'retired'}
         if not self.settings.exploration_enabled or self.state.is_paused():
             raise ValueError('Exploration must be enabled and relay resumed')
         self.exploration.store.enable(session_id, command_id)

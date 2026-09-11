@@ -68,6 +68,14 @@ p + p { margin-top: 4px; }
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
 .topbar { min-height: 40px; }
+.room-switcher { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
+.quiet-controls { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+.quiet-controls fieldset { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; border: 1px solid var(--line); }
+.room-button[aria-pressed="true"] { background: #1c2c42; color: var(--blue); border-color: var(--blue); box-shadow: inset 0 -2px var(--blue); }
+.activity-group { width: 100%; min-width: 0; grid-column: 1 / -1; }
+.activity-group summary { cursor: pointer; padding: 8px 2px; width: 100%; }
+.activity-group summary .group-outcome { display: block; margin: 4px 0 0 16px; }
+.activity-group ol { padding-left: 16px; list-style: none; }
 .tabbar { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
 .tabbar [role="tab"] {
   border: 0; border-bottom: 2px solid transparent; border-radius: 0;

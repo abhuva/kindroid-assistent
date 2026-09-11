@@ -62,6 +62,12 @@ def saved_schedule(state: Any, group: str) -> dict | None:
 
 
 def effective_settings(state: Any, settings: Any) -> Any:
+    if settings.participant_scheduling:
+        # Preserve old rows for audit, but none of their timing/enable switches
+        # can suppress Kin-selected encounters. QuietHours is the sole rest policy.
+        return replace(settings, exploration_enabled=False, curiosity_enabled=False,
+                       initiative_quiet_hours=None, curiosity_quiet_hours=None,
+                       initiative_idle_seconds=0)
     config = saved_schedule(state, settings.group_id)
     if config is None:
         return settings
@@ -120,6 +126,9 @@ class DailyScheduler:
         return {'revision': revision, 'enabled': config['enabled']}
 
     def gate(self, now: int, activity: str, command_id: str = '', *, synchronized: bool = False) -> str | None:
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked(now):
+            return 'quiet_hours'
         from .encounters import Encounters
         if self.settings.room_mode == 'shared' or Encounters(self.state, self.settings).controls_schedule():
             return 'participant_schedule'
@@ -141,8 +150,6 @@ class DailyScheduler:
             return 'not_bootstrapped'
         if self.state.get_int('history_cooldown_until', 0) > now:
             return 'history_cooldown'
-        if not synchronized and self.state.history_request_count() >= self.settings.max_history_requests_24h:
-            return 'history_budget'
         if self.db.execute("SELECT 1 FROM commands WHERE status IN ('queued','running') AND id!=?", (command_id,)).fetchone():
             return 'command_conflict'
         if self.state.pending_ai_messages():

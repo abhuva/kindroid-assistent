@@ -1,5 +1,12 @@
 # ADR-008: Consume Direct Replies and Synchronize at Context Boundaries
 
+Monitoring update (2026-09-11): [ADR-027](ADR-027-no-passive-chat-monitoring.md)
+removes idle history polling, retaining explicit and active-session context reads.
+
+History policy update (2026-09-11): [ADR-026](ADR-026-advisory-daily-history-measurement.md)
+supersedes local hard/rolling history limits with daily UTC advisory measurement.
+Actual history 429 now fails the session and pauses its room; cooldown remains.
+
 **Status:** Accepted | **Date:** 2026-09-06
 **Participants:** Marc, Codex
 

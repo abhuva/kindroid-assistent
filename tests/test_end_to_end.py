@@ -157,7 +157,8 @@ def journey_host(tmp_path, monkeypatch):
                 with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=8, trust_env=False) as client:
                     journey = DashboardJourney(client, config, kindroid, agent)
                     if not interrupted and not recovering:
-                        eventually(lambda: kindroid.history_requests >= 1 and journey.read("snapshot")["worker"]["phase"] == "idle")
+                        eventually(lambda: journey.read("snapshot")["worker"]["phase"] == "idle")
+                        assert kindroid.history_requests == 1  # One startup sync, no polling.
                     yield journey
             finally:
                 agent.release.set()
@@ -183,13 +184,17 @@ def test_complete_http_conversation_refresh_and_idempotent_retry(journey_host):
         assert retry["id"] == command["id"] and not retry["created"]
         app.agent.release.set()
         assert app.finished(command["id"])["result"] == {"handled": 1}
+        synced = app.client.post('/api/v1/commands/sync-history',
+                                 json={'idempotency_key': 'confirm-history'}, headers=app.headers)
+        assert synced.status_code == 202
+        app.finished(synced.json()['id'])
         eventually(lambda: all(m["history_confirmed"] for m in app.read("messages")["items"]))
         messages = app.read("messages")["items"]
         assert len(messages) == 4
         assert len({m["id"] for m in messages}) == 4
         assert {m["participant"] for m in messages} == {"codex", "hannah"}
         kinds = [e["kind"] for e in app.read("activity?limit=500")["items"]]
-        assert kinds.count("command_completed") == 1
+        assert kinds.count("command_completed") == 2
         assert {"codex_started", "message_received", "message_processed", "outbound_sent"} <= set(kinds)
         assert app.agent.calls == 1
         assert app.kindroid.sent == ["[CODEX]: Opening the conversation", "[CODEX]: Closing the conversation"]
@@ -249,7 +254,7 @@ def test_worker_crash_keeps_dashboard_available_and_command_durable(journey_host
         assert restarted.read("commands/" + command["id"])["status"] == "interrupted"
         assert restarted.read("snapshot")["relay"]["paused"]
         assert restarted.kindroid.sent == []
-        assert restarted.kindroid.history_requests == 0
+        eventually(lambda: restarted.kindroid.history_requests == 1)
 
 
 def test_restart_recovers_interrupted_command_without_replay(journey_host):
@@ -259,7 +264,7 @@ def test_restart_recovers_interrupted_command_without_replay(journey_host):
         assert app.read("snapshot")["relay"]["paused"]
         assert app.read("deliveries")["items"][0]["status"] == "sending"
         assert app.kindroid.sent == []
-        assert app.kindroid.history_requests == 0
+        eventually(lambda: app.kindroid.history_requests == 1)
 
 
 def test_real_host_rejects_cross_origin_and_host_spoofing(journey_host):

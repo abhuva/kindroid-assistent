@@ -67,7 +67,8 @@ def configured_rooms(settings: Settings) -> list[Settings]:
             result.append(replace(settings, rooms_file="", room_key=key, room_label=label,
                 group_id=group, room_mode=mode, participants=tuple(roster),
                 kindroid_display_name=roster[0][1], state_path=state_path,
-                account_state_path=settings.state_path, participant_scheduling=chosen and mode == "assistant",
+                account_state_path=settings.state_path, participant_scheduling=True,
+                exploration_enabled=False, curiosity_enabled=False,
                 cooperative_turns=True, shared_hour=int(daily[:2]), shared_minute=int(daily[3:]), **options))
             keys.add(key)
             groups.add(group)

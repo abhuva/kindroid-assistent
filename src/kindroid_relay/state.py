@@ -31,7 +31,7 @@ class RelayAlreadyRunning(RuntimeError):
 
 
 class HistoryBudgetError(RuntimeError):
-    """The rolling local history-read allowance has been exhausted."""
+    """Legacy compatibility name; advisory history measurement never raises it."""
 
 
 def _windows_pid_is_active(pid: int) -> bool:
@@ -393,26 +393,37 @@ class RelayState:
             self.connection.execute(
                 "DELETE FROM history_requests WHERE requested_at < ?", (cutoff,)
             )
-            count = self.connection.execute(
-                "SELECT COUNT(*) FROM history_requests"
-            ).fetchone()[0]
-            if count >= maximum:
-                raise HistoryBudgetError(
-                    f"local history request budget exhausted ({count}/{maximum} in 24h)"
-                )
+            # `maximum` is an advisory dashboard threshold, never permission to read.
             self.connection.execute(
                 "INSERT INTO history_requests(requested_at) VALUES(?)", (now,)
             )
 
+    def has_active_conversation_work(self) -> bool:
+        """Only an existing session may drive automatic conversation work.
+
+        Saved messages alone (including a manual history import) are not a
+        request to reply. A session without a pending reply needs no polling.
+        """
+        if self.connection.execute("SELECT 1 FROM shared_sessions WHERE status='active'").fetchone():
+            return True
+        return bool(self.get_meta('activity_session') and
+                    (self.pending_ai_messages() or self.turns.has_uncertain()))
+
     def history_request_count(self) -> int:
+        return self.history_measurement()["used"]
+
+    def history_measurement(self) -> dict[str, int]:
+        """Account-wide reporting day, not a prediction of Kindroid's quota window."""
         if self.account is not None:
-            return self.account.history_request_count()
-        cutoff = int(time.time()) - 86400
-        return int(
+            return self.account.history_measurement()
+        start = int(time.time()) // 86400 * 86400
+        used = int(
             self.connection.execute(
-                "SELECT COUNT(*) FROM history_requests WHERE requested_at >= ?", (cutoff,)
+                "SELECT COUNT(*) FROM history_requests WHERE requested_at >= ? AND requested_at < ?",
+                (start, start + 86400),
             ).fetchone()[0]
         )
+        return {"used": used, "starts_at": start, "resets_at": start + 86400}
 
     def record_initiative_check(self, maximum: int, outcome: str) -> bool:
         now = int(time.time())
@@ -476,6 +487,7 @@ class RelayState:
 
     def status(self) -> dict[str, object]:
         now = int(time.time())
+        history = self.history_measurement()
         pending_messages = self.connection.execute(
             "SELECT COUNT(*) FROM messages WHERE processed = 0 AND sender_type = 'ai'"
         ).fetchone()[0]
@@ -499,7 +511,9 @@ class RelayState:
             "pending_messages": int(pending_messages),
             "pending_approvals": int(pending_approvals),
             "uncertain_outbox": int(uncertain),
-            "history_requests_24h": self.history_request_count(),
+            "history_requests_24h": history["used"],
+            "history_window_start_at": history["starts_at"],
+            "history_window_reset_at": history["resets_at"],
             "history_cooldown_until": self.get_int("history_cooldown_until", 0),
             "history_last_429_at": self.get_int("history_last_429_at", 0),
             "history_rate_limit_streak": self.get_int(

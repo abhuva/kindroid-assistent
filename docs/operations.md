@@ -10,6 +10,13 @@ Run `.\.venv\Scripts\kindroid-relay.exe serve` from the repository. The default
 address is `http://127.0.0.1:8765`; automatic browser opening is optional. `run`
 provides headless operation, not a second worker to launch alongside `serve`.
 
+For a terminal-launched `serve`, intentional Ctrl+C is caught at the CLI boundary
+after the host's worker cleanup. It prints `Relay shutdown requested.` and exits
+without an asyncio/KeyboardInterrupt traceback. The worker's 30-second wait and
+timeout warning are unchanged; that message alone does not prove an external
+operation completed. Pause and let in-flight work finish before stopping. Automated
+shutdown tests raise exceptions directly and never send Windows console signals.
+
 The sign-in launcher intentionally has no terminal window. For a hidden instance,
 use Windows Task Scheduler: select the installed Kindroid relay task, choose
 **End**, wait until it is no longer Running, then **Run**. First Pause in the
@@ -97,7 +104,7 @@ still apply. Backups are not sanitized diagnostic bundles and must remain privat
 | Interrupted command | Inspect its linked outbox/approval/generation records and remote outcome. Restart marks it interrupted, not safe to execute again. |
 | Uncertain outbound delivery | The message might already exist in Kindroid. Keep paused and inspect the exact outbox/source linkage. Never automatically resend or clear uncertainty merely because the HTTP call timed out. |
 | Hannah replied but response capture was empty | One budgeted history synchronization attempts to recover the existing reply. Missing/ambiguous matches pause; history 429 defers recovery until cooldown. Do not generate again to recover a reply that already exists. |
-| History quota/429 | Observe the dashboard's cooldown. `Retry-After` or durable exponential fallback applies; repeated Resume/Trigger is not a quota bypass. History also has a local rolling allowance and minimum spacing. |
+| History quota/429 | Local usage only warns and resets at 00:00 UTC daily. Actual server 429 fails the session and pauses its room; observe the cooldown, sync/reconcile, then resume separately. `Retry-After` or durable exponential fallback and minimum spacing remain; local reset does not clear them. |
 | Codex failed before replying | Inspect the failed command/activity. No opener was sent if the opener failed before send. A later-chain failure may follow earlier successful effects, so inspect linkage before any manual rerun. |
 | Persona restoration failed | Delivery is uncertain even if the message was posted. Check the active persona in Kindroid and restore Marc's persona locally as needed before resuming. Do not resend the message to fix identity. |
 | Stored persona name differs | `[CODEX]:` remains authoritative attribution; cosmetic names do not prove a separate model speaker role. Inspect the fallback warning rather than changing account-global configuration experimentally. |

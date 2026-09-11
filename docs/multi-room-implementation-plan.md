@@ -253,7 +253,183 @@ the separate real-model acceptance item rather than claiming fixture tests prove
 goodbye recognition. The architecture-decision skill guided ADR-023 and its
 alternatives/cost tradeoffs.
 
-## External acceptance (not authorized by implementation alone)
+## Development dashboard and timing recovery (2026-09-11)
+
+- [x] Render mutually exclusive room buttons with the active room marked, including the root route.
+- [x] Group Activity by durable session IDs; retain expandable details, warnings, filters and all-events view.
+- [x] Save missed appointments as one recovery check-in offering now or rescheduling.
+- [x] Save system six-hour retries for absent/invalid timing and declined turns; honor explicit no-follow-up.
+- [x] Move retries to the next permitted minute and preserve pause, budget and uncertain-effect gates.
+- [x] Add validated per-companion quiet-hour controls, shared across that companion's rooms.
+- [x] Hold private/shared work and queued external commands while allowing local settings and explicit history sync.
+- [x] Document the changed scheduling decision in ADR-024 using the architecture-decision skill.
+- [x] Verify offline behavior, durable command ownership, room isolation and dashboard interactions.
+- [ ] Marc restarts the development host and accepts the controls visually and with real-model scheduling.
+
+Backend verification covered the complete suite in three isolated batches (230,
+220 and 292 cases) with a 60-second hard OS limit per child. The third batch found
+two mocked-room error-path failures in new activity instrumentation; a type guard
+fixed them. A subsequent 148-case targeted run passed, covering those cases and
+the final scheduling/relay changes, including a new no-clarification-loop case.
+The resulting suite contains 743 backend cases plus three UI verification cases.
+The final shared-session grouping checks passed all 70 cases; the final isolated
+UI run passed all three verification cases in 17.89 seconds. `git diff --check`
+passed after implementation and documentation updates.
+
+Locked UI dependencies were installed with `npm ci --ignore-scripts` (zero
+vulnerabilities). DOM checks cover collapse/expansion persistence, warning summaries,
+filtering and quiet-hours validation/same-request retries. The existing axe scan
+includes the new controls. One UI run hit the existing internal 20-second timeout;
+an isolated rerun passed. Existing Starlette/httpx and whatwg-encoding deprecation
+warnings remain. Native browser, actual Kindroid calls and Pi outage behavior are
+not verified; runtime configuration, live databases and processes were not changed.
+
+Files: `quiet_hours.py`, `encounters.py`, `relay.py`, `shared.py`, `application.py`,
+`room_worker.py`, `worker.py`, `schedule.py`, `curiosity.py`, `command_queue.py`,
+`activity.py`, `models.py`, `codex_agent.py`, `web/app.py`, and dashboard
+`app.js`, `encounters.js`, `index.html`, `styles.css`. Tests are in
+`test_encounter_recovery.py`, `test_room_encounters.py`, and `ui_dashboard_test.cjs`.
+README, the documentation index, room operator guide, dashboard architecture and
+ADR-020/024 were updated. Historical `current-system.md` and older milestone
+verification records remain dated snapshots. Schema remains 13.
+
+## Global Kin-driven scheduling and invitation retirement (2026-09-11)
+
+- [x] Make runtime configuration use participant timing in every private/shared room.
+- [x] Remove scripted exploration offers, invitations and automatic follow-ups.
+- [x] Remove Daily Schedule, shared daily-start and Discovery configuration panels.
+- [x] Retain per-Kin quiet hours, room-specific next-time overrides and check-in budgets.
+- [x] Preserve six-hour fallback, missed-time recovery and explicit no-follow-up.
+- [x] Accept source-linked current-session timing from either shared companion.
+- [x] Stop legacy queued timers/invitations without external effects or deletion.
+- [x] Retire safe old follow-ups with audit; preserve uncertain delivery for inspection.
+- [x] Record the policy, alternatives and upgrade behaviour in ADR-025 and operator docs.
+- [x] Verify backend regressions in hard-timeout batches; verify dashboard DOM/accessibility.
+- [ ] Accept real-model timing choices and native-browser appearance after operator restart.
+
+Implementation files: `config.py`, `rooms.py`, `schedule.py`, `encounters.py`,
+`relay.py`, `shared.py`, `application.py`, `room_worker.py`, `worker.py`,
+`command_queue.py`, `activity.py`, new `retired_exploration.py`, `codex_agent.py`,
+`web/app.py`, and dashboard `index.html`, `encounters.js`, `exploration.js`,
+`ui-model.js`. Tests: new `test_kin_scheduling.py`, updated room/recovery cases,
+the historical `test_relay.py` settings fixture, and `ui_dashboard_test.cjs`.
+
+The historical fixture explicitly retains the old internal settings mode to test
+preserved storage/transport contracts. Production `Settings.load()` ignores the
+old opt-out; dedicated current-policy tests cover that and all room modes. Removed
+daily/invitation UI interaction tests were replaced with retirement, retained
+history and shared-choice tests. The DOM harness now loads the HTML's actual script
+list, so removed scripts cannot silently remain part of UI verification.
+
+Architecture Decision preserved the global-policy rationale and alternatives;
+OpenAI Docs informed required nullable structured timing fields with worker-side
+source validation. No new model calls are added to shared attention checks.
+Schema remains 13; no live state, provider calls or running host was changed.
+Older system/milestone snapshots remain historical where explicitly marked.
+
+Verification: **778 pytest cases passed** across isolated batches of 230, 233,
+312 and three UI asset checks, each with a hard OS timeout of at most 60 seconds.
+The UI harness passes 31 DOM cases plus its multi-view axe scan; `npm test` also
+passed independently after `npm ci --ignore-scripts` (zero vulnerabilities).
+Initial runs exposed obsolete feature expectations and a dispatch dependency on
+test application settings; those were corrected before the passing reruns.
+`git diff --check` passed. Existing Starlette/httpx and whatwg-encoding deprecation
+warnings remain. Native-browser visual, real-model and live-provider acceptance
+are not established by these mocked tests.
+
+## Advisory daily history measurement (2026-09-11)
+
+Implemented under [ADR-026](adr/ADR-026-advisory-daily-history-measurement.md):
+
+- [x] Replace the hard rolling history limit with account-wide UTC-day measurement;
+      requests above the configured warning threshold remain permitted.
+- [x] Remove local count gates from chosen encounters and legacy scheduler/recovery
+      paths; preserve provider cooldown, spacing and separate check-in budgets.
+- [x] Display the warning and next daily reset without disabling controls.
+- [x] Fail active sessions and commands on actual history HTTP 429, retaining
+      successful effects, uncertain generations and already-paused recovery targets.
+- [x] Verify pagination above threshold, midnight/downtime/restart behavior,
+      operation counts across reset, incomplete pagination and redaction.
+
+Changed runtime files: `state.py`, `relay.py`, `application.py`, `worker.py`,
+`room_worker.py`, `encounters.py`, `schedule.py`, `curiosity.py`, `shared_recovery.py`.
+Dashboard files: `web/static/index.html`, `app.js`, `ui-model.js`. Added
+`tests/test_history_measurement.py` and updated affected history/recovery/room/UI
+tests. Updated README, environment example, operator docs and supersession notes
+in ADR-008/020/022. No schema migration or live database reset.
+
+Verification: **781 pytest cases passed** in bounded backend batches of 228, 232
+and 318 plus three UI wrappers. `npm test` also passed independently: API-client
+checks, 32 DOM checks and one axe scan, after `npm ci --ignore-scripts` (zero
+vulnerabilities). Initial targeted failures were obsolete auto-continuation
+expectations and new fixture errors, corrected before passing reruns.
+`git diff --check` passed. Existing Starlette/httpx and whatwg-encoding deprecation
+warnings remain. No live provider requests, process restart, or native-browser
+acceptance was performed. Older hard-history-budget descriptions are historical
+and superseded by ADR-026.
+
+## No passive chat monitoring (2026-09-11)
+
+Implemented under [ADR-027](adr/ADR-027-no-passive-chat-monitoring.md):
+
+- [x] Idle startup, restarts and elapsed polling intervals make no history requests
+      in either worker mode. Saved pending messages alone cannot start a session.
+- [x] Kin-chosen/fallback check-ins, explicit starts and active cooperative replies
+      remain operational; completed sessions return to read-free idle.
+- [x] First requested check-in bootstraps context and proceeds without replaying
+      old messages or performing a redundant immediate sync.
+- [x] Manual sync alone does not start a reply; pending imports can be handled by
+      a subsequent explicit trigger or chosen check-in without blocking it forever.
+- [x] Retain required context/empty-response recovery, approval-result continuation,
+      pause/quiet-hour guards, provider cooldown and uncertain-effect evidence.
+- [x] Update UI idle wording, sync guidance and snapshot monitoring flag.
+
+Changed runtime files: `state.py`, `room_worker.py`, `worker.py`, `relay.py`,
+`encounters.py`, `web/app.py`, `web/static/app.js`, `web/static/index.html`.
+Added 16 regression cases in `tests/test_no_monitoring.py`; updated active-session
+worker, end-to-end HTTP, room-failure and dashboard fixtures. Updated README,
+environment example, operator/dashboard docs and ADR-008/020 supersession notes.
+
+Verification: **797 pytest cases passed** across bounded batches of 228, 232 and
+334 backend cases plus three UI wrappers. `npm test` independently passed its
+API-client checks, 32 DOM cases and axe scan after `npm ci --ignore-scripts` (zero
+vulnerabilities). Two initial full-suite batches reached their 60-second limit:
+old HTTP fixtures waited for startup polling, and a room-failure fixture lacked an
+active session. Both were corrected; targeted and complete batch reruns passed.
+`git diff --check` passed. Existing Starlette/httpx and whatwg-encoding deprecation
+warnings remain. No live provider requests, host restart, database reset or
+native-browser acceptance was performed. Older passive-monitoring descriptions
+are superseded by ADR-027; no schema migration is needed.
+
+## Startup catch-up clarification (2026-09-11)
+
+Marc clarified that first startup and every restart should sync history once,
+while recurring idle monitoring remains off. This amends the startup-only portion
+of the preceding milestone and [ADR-027](adr/ADR-027-no-passive-chat-monitoring.md).
+
+- [x] One worker-owned startup synchronization per room/launch, including shared
+      rooms, with normal pagination and measured request accounting.
+- [x] Quiet hours and existing account cooldown defer the unattempted read; errors
+      do not create an idle retry loop. Manual sync remains available for retry.
+- [x] First import does not replay old messages; later catch-up imports new messages
+      without creating a conversation. Stale inactive session markers cannot
+      accidentally authorize replies to newly imported chat.
+- [x] Paused rooms can catch up without resume or duplicate delivery/generation;
+      startup outcomes are reported as history activity, without fake command IDs.
+
+Changed `worker.py`, `room_worker.py`, `application.py`, dashboard sync guidance,
+ADR-027 and operator docs; added 16 cases in `tests/test_startup_history.py` and
+updated no-monitoring, HTTP lifecycle and DOM expectations.
+
+Verification: **813 pytest cases passed** across bounded backend batches of 228,
+232 and 350 plus three UI wrappers (API client, 32 DOM checks and axe scan).
+`npm ci --ignore-scripts` reported zero vulnerabilities. Initial new-test syntax
+and database-fixture setup errors were corrected before passing targeted and full
+runs. `git diff --check` passed. Existing dependency deprecation warnings remain.
+No live Kindroid calls, host restart, database reset or native-browser acceptance
+was performed. Schema remains 13.
+
+### Remaining external acceptance
 
 - [ ] Marc verifies real Codex scheduling interpretation and conversational quality.
 - [ ] Explicitly approved disposable-group test verifies manual selection,

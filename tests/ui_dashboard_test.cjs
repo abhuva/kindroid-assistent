@@ -34,6 +34,7 @@ async function dashboard(t) {
         initiative_budget: { used: 5, limit: 50, available_at: null, source: "configuration" } } },
     commands: [], events: [], deliveries: [], calls: [], offline: false, losePost: false,
     encounters: { enabled: true, mode: "assistant", choice: null, controls_schedule: false, session: null,
+      quiet_now: false, quiet_hours: [{ participant: 0, name: 'Hannah', enabled: false, start: '22:00', end: '06:00' }],
       shared_config: { enabled: true, daily_time: "18:00" } },
     daily: { configured: false, revision: null, date: "2026-09-07", timezone: ["Fixture time"], next_due_at: null,
       config: { enabled: true, weights: { check_in: 40, exploration: 60 }, dead_hours: [],
@@ -106,13 +107,29 @@ async function dashboard(t) {
     if (url.includes("log-tail")) return response({ lines: ["<b>safe text</b>"], truncated: true }, options.headers?.["If-None-Match"] ? 304 : 200);
     throw new Error(`Unexpected fixture request ${url}`);
   };
-  for (const name of ["api-client.js", "ui-model.js", "app.js", "memory.js", "exploration.js", "garden.js", "schedule.js", "discovery.js", "encounters.js"]) {
+  for (const name of [...w.document.querySelectorAll('script[src]')].map(script => path.basename(script.src))) {
     w.eval(fs.readFileSync(path.join(assets, name), "utf8") + (name === "app.js" ? "\nwindow.testApp = { refreshAll, schedulePoll };" : ""));
   }
   const flush = async () => { for (let i = 0; i < 5; i++) await tick(); };
   await flush();
   return { w, fixture, timers, flush, el: (id) => w.document.getElementById(id), refresh: () => w.testApp.refreshAll() };
 }
+
+test('history threshold warns without disabling work and displays daily reset', async (t) => {
+  const { fixture, el, refresh, flush } = await dashboard(t);
+  fixture.snapshot.relay.history_requests_24h = 125;
+  fixture.snapshot.relay.history_window_reset_at = 1788825600;
+  await refresh(); await flush();
+  assert.equal(el('history-budget').textContent, '125 / 100');
+  assert.match(el('history-budget-note').textContent, /threshold reached; requests remain enabled/);
+  assert.match(el('history-budget-note').textContent, /resets at.*00:00 UTC/);
+  assert.equal(el('history-budget-note').classList.contains('warning'), true);
+  assert.equal(el('trigger-initiative').disabled, false);
+  fixture.snapshot.relay.history_requests_24h = 0;
+  await refresh(); await flush();
+  assert.equal(el('history-budget').textContent, '0 / 100');
+  assert.equal(el('history-budget-note').classList.contains('warning'), false);
+});
 
 test("encounter cancellation preserves its request key after a lost response", async (t) => {
   const { el, flush, fixture } = await dashboard(t);
@@ -129,6 +146,50 @@ test("encounter cancellation preserves its request key after a lost response", a
   assert.match(el("encounter-result").textContent, /queued/);
 });
 
+test('activity sessions collapse, preserve expansion through polling, filter and expose warnings', async (t) => {
+  const { w, fixture, el, refresh, flush } = await dashboard(t);
+  fixture.events = [
+    { id: 1, kind: 'session_started', severity: 'info', summary: 'Conversation session started', details: { session_id: 's1' }, created_at: stamp },
+    { id: 2, kind: 'outbound_uncertain', severity: 'warning', summary: 'Inspect delivery', details: { session_id: 's1', outbox_id: 'o1' }, created_at: stamp },
+    { id: 3, kind: 'session_ended', severity: 'info', summary: 'Conversation session ended', details: { session_id: 's1', outcome: 'paused' }, created_at: stamp },
+  ];
+  await refresh(); await flush();
+  assert.equal(el('activity-list').children.length, 1);
+  let group = el('activity-list').querySelector('details');
+  assert.equal(group.open, false);
+  assert.match(group.querySelector('summary').textContent, /started.*ended.*paused.*Inspect delivery/);
+  assert.equal(group.querySelectorAll('ol > li').length, 3);
+  group.open = true; group.dispatchEvent(new w.Event('toggle'));
+  await refresh(); await flush();
+  assert.equal(el('activity-list').querySelector('details').open, true);
+  el('activity-view').value = 'events'; el('activity-view').dispatchEvent(new w.Event('change'));
+  assert.equal(el('activity-list').children.length, 3);
+  el('activity-view').value = 'grouped'; el('activity-view').dispatchEvent(new w.Event('change'));
+  el('activity-related').value = 'o1'; el('activity-related').dispatchEvent(new w.Event('input'));
+  assert.equal(el('activity-list').children.length, 1);
+  assert.match(el('activity-list').textContent, /outbox: o1/);
+});
+
+test('quiet hours validate locally and retry the same queued request after response loss', async (t) => {
+  const { w, fixture, el, flush } = await dashboard(t);
+  const form = el('quiet-controls').querySelector('form');
+  const checkbox = form.querySelector('[type=checkbox]');
+  const [start, end] = form.querySelectorAll('[type=time]');
+  checkbox.checked = true; end.value = start.value;
+  form.dispatchEvent(new w.Event('submit', { cancelable: true })); await flush();
+  assert.match(el('quiet-result').textContent, /different start and end/);
+  assert.equal(fixture.calls.filter(c => c.options.method === 'POST').length, 0);
+  end.value = '06:00'; fixture.losePost = true;
+  form.dispatchEvent(new w.Event('submit', { cancelable: true })); await flush();
+  assert.equal(el('encounter-retry').hidden, false);
+  el('encounter-retry').click(); await flush();
+  const calls = fixture.calls.filter(c => c.url === '/api/v1/settings/quiet-hours');
+  assert.equal(calls.length, 2);
+  const [first, second] = calls.map(c => JSON.parse(c.options.body));
+  assert.equal(first.idempotency_key, second.idempotency_key);
+  assert.deepEqual(first.payload, { participant: 0, enabled: true, start: '22:00', end: '06:00' });
+});
+
 test("room API requests retain the selected room namespace", async (t) => {
   const { w } = await dashboard(t);
   w.history.replaceState({}, "", "/rooms/miko/");
@@ -140,213 +201,7 @@ test("room API requests retain the selected room namespace", async (t) => {
   assert.deepEqual(calls, ["/rooms/miko/api/v1/messages"]);
 });
 
-test("schedule reallocates overnight and multiple dead blocks and preserves draft on refresh", async (t) => {
-  const { w, el, flush, fixture } = await dashboard(t);
-  el("tab-schedule").click();
-  assert.equal(el("view-schedule").hidden, false);
-  assert.equal(el("schedule-timeline").children.length, 24);
-  assert.match(el("schedule-counts").textContent, /24 hourly ticks.*10 check-ins \/ 14 exploration/);
-  el("schedule-add-dead").click();
-  assert.match(el("schedule-counts").textContent, /16 hourly ticks.*6 check-ins \/ 10 exploration/);
-  assert.match(el("schedule-dead-blocks").textContent, /22:00–06:00 \(8h\)/);
-  assert.equal(el("schedule-timeline").children[22].getAttribute("aria-pressed"), "true");
-  el("schedule-dead-start").value = "12:00"; el("schedule-dead-end").value = "14:00";
-  el("schedule-add-dead").click();
-  assert.equal(el("schedule-dead-blocks").children.length, 2);
-  assert.match(el("schedule-counts").textContent, /14 hourly ticks/);
-  el("schedule-refresh").click(); await flush();
-  assert.match(el("schedule-counts").textContent, /14 hourly ticks.*Unsaved preview/);
-  el("schedule-timeline").children[12].click();
-  assert.match(el("schedule-counts").textContent, /15 hourly ticks/);
-  assert.equal(fixture.calls.filter(c => c.options.method === "POST").length, 0);
-  el("schedule-discard").click();
-  assert.match(el("schedule-counts").textContent, /24 hourly ticks/);
-  el("schedule-balance").value = "25";
-  el("schedule-balance").dispatchEvent(new w.Event("input"));
-  assert.equal(el("schedule-exploration").value, "75");
-  assert.match(el("schedule-counts").textContent, /6 check-ins \/ 18 exploration/);
-});
 
-test("schedule save survives a lost response, locks the draft and follows worker completion", async (t) => {
-  const { w, el, fixture, flush, refresh } = await dashboard(t);
-  el("tab-schedule").click(); el("schedule-add-dead").click();
-  fixture.losePost = true;
-  const save = () => el("schedule-form").dispatchEvent(new w.Event("submit", { cancelable: true }));
-  save(); await flush();
-  assert.equal(el("schedule-fields").disabled, true);
-  assert.equal(el("schedule-save").textContent, "Retry same save");
-  save(); await flush();
-  const posts = fixture.calls.filter(c => c.url === "/api/v1/settings/schedule");
-  assert.equal(posts.length, 2);
-  const body = JSON.parse(posts[0].options.body);
-  assert.equal(body.idempotency_key, JSON.parse(posts[1].options.body).idempotency_key);
-  assert.deepEqual(body.payload.dead_hours, [0, 1, 2, 3, 4, 5, 22, 23]);
-  assert.equal(el("schedule-save").disabled, true);
-  assert.match(el("schedule-command").textContent, /queued/);
-  fixture.daily.config = body.payload; fixture.daily.configured = true;
-  fixture.commands[0].status = "completed";
-  fixture.commands[0].result = { revision: fixture.commands[0].id };
-  await refresh(); await flush();
-  assert.match(el("schedule-command").textContent, /Schedule saved/);
-  assert.equal(el("schedule-fields").disabled, false);
-  assert.doesNotMatch(el("schedule-counts").textContent, /Unsaved/);
-});
-
-test("tick buttons recalculate the preview and persist their selected interval", async (t) => {
-  const { w, el, fixture, flush } = await dashboard(t);
-  el("tab-schedule").click(); el("schedule-add-dead").click();
-  const interval = n => w.document.querySelector(`[data-tick-minutes="${n}"]`);
-  assert.equal(interval(60).getAttribute("aria-pressed"), "true");
-  interval(15).click();
-  assert.match(el("schedule-counts").textContent, /16 available hours.*64 ticks \(15 mins\).*26 check-ins \/ 38 exploration/);
-  assert.equal(el("schedule-timeline").querySelectorAll(".schedule-tick").length, 96);
-  assert.equal(el("schedule-timeline").classList.contains("dense"), true);
-  assert.match(el("schedule-timeline").children[6].title, /06:15.*06:30.*06:45/);
-  assert.equal(interval(15).getAttribute("aria-pressed"), "true");
-  assert.equal(interval(60).getAttribute("aria-pressed"), "false");
-  interval(30).click();
-  assert.match(el("schedule-counts").textContent, /32 ticks \(30 mins\).*13 check-ins \/ 19 exploration/);
-  assert.equal(el("schedule-timeline").querySelectorAll(".schedule-tick").length, 48);
-  el("schedule-refresh").click(); await flush();
-  assert.equal(interval(30).getAttribute("aria-pressed"), "true", "Polling preserves the interval draft");
-  assert.equal(fixture.calls.filter(c => c.options.method === "POST").length, 0);
-  el("schedule-form").dispatchEvent(new w.Event("submit", { cancelable: true })); await flush();
-  const post = fixture.calls.find(c => c.url === "/api/v1/settings/schedule");
-  assert.equal(JSON.parse(post.options.body).payload.tick_minutes, 30);
-  assert.equal(el("schedule-fields").disabled, true);
-});
-
-test("schedule explains limits and all-day exclusion without unsafe HTML", async (t) => {
-  const { el, fixture, flush } = await dashboard(t);
-  el("tab-schedule").click();
-  assert.match(el("schedule-warnings").textContent, /Exploration limits are below/);
-  fixture.daily.capabilities.exploration = false;
-  fixture.daily.recent = [{ wall_slot: "2026-09-07T12", activity: "exploration", outcome: "<img src=x>", command_status: "failed" }];
-  el("schedule-refresh").click(); await flush();
-  assert.match(el("schedule-warnings").textContent, /Exploration is disabled/);
-  assert.equal(el("schedule-history").querySelector("img"), null);
-  el("schedule-dead-start").value = "00:00"; el("schedule-dead-end").value = "00:00";
-  el("schedule-add-dead").click();
-  assert.match(el("schedule-counts").textContent, /0 hourly ticks/);
-  assert.match(el("schedule-warnings").textContent, /All hours are dead time/);
-});
-
-test("unknown schedule save can be retried after command polling already saw completion", async (t) => {
-  const { w, el, fixture, flush, refresh } = await dashboard(t);
-  el("tab-schedule").click(); el("schedule-add-dead").click();
-  fixture.losePost = true;
-  const save = () => el("schedule-form").dispatchEvent(new w.Event("submit", { cancelable: true }));
-  save(); await flush();
-  await refresh(); await flush();
-  assert.equal(el("schedule-save").disabled, false, "Unknown response still offers its same-key retry");
-  fixture.commands[0].status = "completed";
-  await refresh(); await flush();
-  save(); await flush();
-  assert.equal(el("schedule-fields").disabled, false);
-  assert.equal(el("schedule-save").textContent, "Save schedule");
-  assert.match(el("schedule-command").textContent, /Schedule saved/);
-  assert.equal(fixture.commands.length, 1);
-});
-
-test("exploration is gated, confirmed, idempotent, and renders source text safely", async (t) => {
-  const { w, fixture, el, flush } = await dashboard(t);
-  el("tab-operations").click();
-  el("exploration-refresh").click(); await flush();
-  assert.equal(el("exploration-start").disabled, true);
-  fixture.exploration.enabled = true;
-  fixture.exploration.sessions = [{ id: "session1", mode: "explorer", status: "observed", budget: 1,
-    version: "v1", seed: "seed", response_message_id: "m2", events: [{ actor: "hannah",
-      origin: "conversational_observation", kind: "response_observed", details: {},
-      observation: { evidence: [{ quote: "<img src=x onerror=bad()>", message_id: "m2" }] } }] }];
-  fixture.exploration.candidates = [{ id: "seed1", status: "active", summary: "<script>bad()</script>",
-    selection_kind: "adjacent", provider: "local-catalog", locator: "catalog:test" }];
-  el("exploration-refresh").click(); await flush();
-  assert.equal(el("exploration-start").disabled, false);
-  assert.equal(el("exploration-panel").querySelector("img,script"), null);
-  const src = el("exploration-sessions").querySelector("button");
-  src.click(); await flush();
-  assert.equal(el("detail-dialog").open, true);
-  el("detail-dialog").close();
-  el("exploration-start").click();
-  assert.equal(el("exploration-dialog").open, true);
-  assert.match(el("exploration-confirm-scope").textContent, /one optional response/);
-  assert.equal(fixture.calls.filter(c => c.options.method === "POST").length, 0);
-  fixture.losePost = true;
-  el("exploration-confirm-form").dispatchEvent(new w.Event("submit", { cancelable: true })); await flush();
-  assert.equal(el("exploration-dialog").open, true);
-  el("exploration-confirm-form").dispatchEvent(new w.Event("submit", { cancelable: true })); await flush();
-  const posts = fixture.calls.filter(c => c.url === "/api/v1/commands/start-exploration");
-  assert.equal(posts.length, 2);
-  assert.equal(JSON.parse(posts[0].options.body).idempotency_key, JSON.parse(posts[1].options.body).idempotency_key);
-  assert.match(el("exploration-command").textContent, /Queued/);
-  el("exploration-candidates").querySelector("button").click();
-  el("exploration-reason").value = "Not useful currently";
-  el("exploration-confirm-form").dispatchEvent(new w.Event("submit", { cancelable: true })); await flush();
-  const review = fixture.calls.find(c => c.url === "/api/v1/exploration/candidates/review");
-  assert.deepEqual(JSON.parse(review.options.body).payload, { candidate_id: "seed1", status: "archived", reason: "Not useful currently" });
-  fixture.exploration.budget.used = 3;
-  el("exploration-refresh").click(); await flush();
-  assert.equal(el("exploration-start").disabled, true);
-});
-
-test("curiosity status is separate from manual exploration and never enables scheduling from the browser", async (t) => {
-  const { w, fixture, el, flush } = await dashboard(t);
-  el("tab-operations").click();
-  fixture.exploration.enabled = true;
-  fixture.exploration.curiosity = { enabled: false, hours: [10, 16], next_due_at: null,
-    interval_seconds: 21600, jitter_seconds: 1800, quiet_hours: [1320, 480], idle_seconds: 1800,
-    attempt_limit: 2, interpretation_limit: 4, budget: { attempts: 0, interpretations: 0 }, recent: [] };
-  el("exploration-refresh").click(); await flush();
-  assert.equal(el("exploration-start").disabled, false);
-  assert.match(el("curiosity-status").textContent, /off; manual invitations only/);
-  assert.match(el("curiosity-budget").textContent, /0\/2/);
-  fixture.exploration.curiosity.enabled = true;
-  fixture.exploration.curiosity.next_due_at = 1800000000;
-  fixture.exploration.curiosity.recent = [{ scheduled_at: 1700000000, outcome: "recent_conversation", command_id: null },
-    { scheduled_at: 1700003600, outcome: "failed_inspect_delivery", command_status: "failed", command_id: "<img src=x>" }];
-  el("exploration-refresh").click(); await flush();
-  assert.match(el("curiosity-status").textContent, /enabled.*local hours 10, 16/);
-  assert.match(el("curiosity-history").textContent, /recent_conversation/);
-  assert.equal(el("curiosity-history").querySelector("img"), null);
-  assert.equal(fixture.calls.filter(c => c.options.method === "POST").length, 0);
-  fixture.exploration.curiosity.hours = null;
-  el("exploration-refresh").click(); await flush();
-  assert.match(el("curiosity-status").textContent, /every 6h, jitter/);
-  assert.match(el("curiosity-budget").textContent, /Requires 30m/);
-  fixture.exploration.curiosity.shared_schedule = true;
-  fixture.exploration.curiosity.idle_seconds = 0;
-  el("exploration-refresh").click(); await flush();
-  assert.match(el("curiosity-budget").textContent, /No conversation cooldown/);
-  assert.doesNotMatch(el("curiosity-budget").textContent, /Requires .*m quiet/);
-  assert.equal(el("view-operations").hidden, false);
-});
-
-test("existing exploration response can be interpreted without resending its invitation", async (t) => {
-  const { w, fixture, el, flush } = await dashboard(t);
-  el("tab-operations").click();
-  fixture.exploration.enabled = true;
-  fixture.exploration.sessions = [{ id: "old-session", mode: "explorer", status: "observed", budget: 1,
-    version: "v1", seed: "seed", response_message_id: "m2", responses: [], events: [] }];
-  el("exploration-refresh").click(); await flush();
-  const interpret = [...el("exploration-sessions").querySelectorAll("button")].find(b => b.textContent === "Interpret response");
-  interpret.click();
-  assert.match(el("exploration-confirm-scope").textContent, /without resending/);
-  assert.equal(el("exploration-reason").required, false);
-  el("exploration-confirm-form").dispatchEvent(new w.Event("submit", { cancelable: true })); await flush();
-  const posts = fixture.calls.filter(c => c.options.method === "POST");
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, "/api/v1/exploration/interpret");
-  assert.equal(JSON.parse(posts[0].options.body).payload.session_id, "old-session");
-  fixture.exploration.sessions[0].responses = [{ step: 0, status: "complete", classification: "alternative", note: "Acknowledgement sent",
-    decision: { quote: "<img src=x onerror=bad()>", interpretation: "Provisional interest" }, message_id: "m2" }];
-  fixture.exploration.candidates = [{ id: "alternative", status: "active", summary: "Tide pools", origin_actor: "hannah",
-    selection_kind: "reported_alternative", provider: "response-observation", locator: "memory:source", responses: [{ reaction: "alternative", message_id: "m2" }] }];
-  el("exploration-refresh").click(); await flush();
-  assert.match(el("exploration-candidates").textContent, /Hannah's reported alternative/);
-  assert.match(el("exploration-candidates").textContent, /not a permanent preference/);
-  assert.equal(el("exploration-panel").querySelector("img"), null);
-  assert.ok(![...el("exploration-sessions").querySelectorAll("button")].some(b => b.textContent === "Interpret response"));
-});
 
 test("tabs group the requested panels and preserve state without making requests", async (t) => {
   const { w, el, fixture, refresh } = await dashboard(t);
@@ -470,6 +325,11 @@ test("actual dashboard renders worker states, waiting time and stale controls", 
     fixture.snapshot.worker.phase = phase;
     await refresh();
     assert.equal(el("relay-state").textContent, label);
+    if (phase === "idle") {
+      assert.match(el("current-activity").textContent, /Waiting for a check-in or manual start/);
+      assert.match(el("history-sync-note").textContent, /Background chat monitoring is off/);
+      assert.match(el("history-sync-note").textContent, /Each startup syncs history once per room/);
+    }
     if (phase === "running_codex") {
       assert.match(el("current-activity").textContent, /Waiting for Codex/);
       assert.match(el("current-elapsed").textContent, /1m 5s/);
@@ -894,44 +754,35 @@ test("garden filters and pagination use bounded reads and preserve the selected 
   assert.equal(el("view-operations").hidden, false);
 });
 
-test("discovery saves opt-in without immediate work and retries the same unknown request", async (t) => {
-  const { w, fixture, el, flush } = await dashboard(t);
-  el("tab-schedule").click(); el("discovery-panel").open = true;
-  el("discovery-refresh").click(); await flush();
-  assert.equal(el("discovery-follow").checked, false);
-  el("discovery-follow").checked = true;
-  w.document.querySelector('[name="discovery-source"][value="creative"]').checked = true;
-  el("discovery-form").dispatchEvent(new w.Event("input", { bubbles: true }));
-  fixture.losePost = true;
-  el("discovery-form").dispatchEvent(new w.Event("submit", { cancelable: true })); await flush();
-  assert.equal(el("discovery-fields").disabled, true);
-  assert.equal(el("discovery-retry").hidden, false);
-  el("discovery-retry").click(); await flush();
-  const posts = fixture.calls.filter(c => c.options.method === "POST");
-  assert.equal(posts.length, 2);
-  assert.equal(posts[0].options.body, posts[1].options.body);
-  assert.equal(JSON.parse(posts[0].options.body).payload.follow_through, true);
-  assert.ok(JSON.parse(posts[0].options.body).payload.sources.includes("creative"));
-  assert.equal(fixture.commands.length, 1);
-  fixture.commands[0].status = "completed";
-  w.document.dispatchEvent(new w.CustomEvent("relay-command", { detail: fixture.commands[0] })); await flush();
-  assert.equal(el("discovery-fields").disabled, false);
+test("Kin scheduling removes daily controls and invitation actions globally", async (t) => {
+  const { fixture, el, flush } = await dashboard(t);
+  el("tab-schedule").click();
+  assert.equal(el("schedule-heading"), null);
+  assert.equal(el("schedule-form"), null);
+  assert.equal(el("shared-schedule-controls"), null);
+  assert.ok(el("quiet-controls"));
+  assert.equal(el("discovery-panel"), null);
+  fixture.exploration.retired = true;
+  fixture.exploration.sessions = [{ id: "old", status: "observed", events: [], responses: [] }];
+  el("exploration-refresh").click(); await flush();
+  assert.equal(el("exploration-start").hidden, true);
+  assert.match(el("exploration-status").textContent, /retired/);
+  assert.ok(![...el("exploration-sessions").querySelectorAll("button")].some(b => b.textContent === "Interpret response"));
+  assert.ok(!fixture.calls.some(c => c.url === "/api/v1/schedule"));
+  assert.ok(!fixture.calls.some(c => c.options.method === "POST"));
 });
 
-test("discovery keeps unsafe sources inert and public-topic approvals explicit", async (t) => {
+test("shared room displays its Kin choice and keeps quiet hours and overrides", async (t) => {
   const { w, fixture, el, flush } = await dashboard(t);
-  fixture.discovery.experiences = [{ session_id: "session1", status: "needs_public_topic", topic: "", note: "<script>bad()</script>",
-    sources: [{ title: "<img src=x>", excerpt: "Public source text", url: "javascript:alert(1)", retrieved_at: 1 }] }];
-  el("tab-schedule").click(); el("discovery-panel").open = true;
-  el("discovery-refresh").click(); await flush();
-  assert.equal(el("discovery-experiences").querySelector("script, img, a"), null);
-  const form = el("discovery-experiences").querySelector("form");
-  form.querySelector("input").value = "Tide pools";
-  form.dispatchEvent(new w.Event("submit", { cancelable: true })); await flush();
-  const post = fixture.calls.find(c => c.options.method === "POST");
-  assert.equal(post.url, "/api/v1/discovery/public-topic");
-  assert.deepEqual(JSON.parse(post.options.body).payload, { session_id: "session1", topic: "Tide pools" });
+  fixture.encounters.mode = "shared";
+  fixture.encounters.choice = { status: "pending", actor: "participant", due_at: 1800000000 };
+  fixture.snapshot.relay.paused = true;
+  await w.testApp.refreshAll(); await flush();
+  assert.equal(el("encounter-controls").hidden, false);
+  assert.equal(el("session-end").hidden, false);
+  assert.match(el("encounter-status").textContent, /Kin-chosen/);
 });
+
 
 test("encounter rejection leaves controls available for a corrected request", async (t) => {
   const { fixture, el, flush } = await dashboard(t);
@@ -1028,9 +879,7 @@ test("axe scans dashboard and each confirmation, memory, exploration and garden 
   assert.equal(el("session-recovery").hidden, false);
   await scan();
   el("tab-schedule").click();
-  w.document.querySelector('[data-tick-minutes="15"]').click();
-  el("discovery-panel").open = true;
-  el("discovery-refresh").click(); await flush();
+  assert.ok(el("quiet-controls").querySelector('form'));
   await scan(el("view-schedule"));
   el("tab-operations").click();
   el("exploration-panel").open = true;
@@ -1045,7 +894,8 @@ test("axe scans dashboard and each confirmation, memory, exploration and garden 
   el("message-list").querySelector("button").click();
   await scan(el("memory-dialog"));
   el("memory-dialog").close();
-  el("exploration-start").click();
+  // Review-only historical records still use this confirmation dialog.
+  el("exploration-dialog").showModal();
   await scan(el("exploration-dialog"));
   el("exploration-dialog").close();
   fixture.garden.items = [{ id: "seed1", layer: "passing", status: "active", ownership: "self", content: "Seed", origin_actor: "codex", origin: "system_candidate", last_interaction_at: 1, current_version: 1 }];

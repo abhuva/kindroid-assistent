@@ -3,6 +3,10 @@
 **Status:** Accepted | **Date:** 2026-09-07\
 **Participants:** Marc, Codex
 
+**Status update, 2026-09-11:** Scheduling/UI decision superseded by
+[ADR-025](ADR-025-kin-driven-check-ins-without-invitations.md). Daily allocations
+are retired globally; existing state and budget records are retained.
+
 **2026-09-08 amendment:** [ADR-019](ADR-019-shared-ticks-without-inactivity-cooldown.md)
 removes the inherited inactivity rule for saved shared schedules. Pending work,
 uncertainty, dead time and API limits remain guarded.

@@ -92,6 +92,9 @@ class CuriosityScheduler:
         return {'attempts': row['n'], 'interpretations': row['calls']}
 
     def gate(self, now: int, command_id: str = '', *, synchronized: bool = False) -> str | None:
+        from .quiet_hours import QuietHours
+        if QuietHours(self.state, self.settings).blocked(now):
+            return 'quiet_hours'
         s = self.settings
         if not self.enabled:
             return 'disabled'
@@ -103,8 +106,6 @@ class CuriosityScheduler:
             return 'quiet_hours'
         if self.state.get_int('history_cooldown_until', 0) > now:
             return 'history_cooldown'
-        if not synchronized and self.state.history_request_count() >= s.max_history_requests_24h:
-            return 'history_budget'
         if self.db.execute("SELECT 1 FROM commands WHERE status IN ('queued','running') AND id!=? LIMIT 1", (command_id,)).fetchone():
             return 'command_conflict'
         if self.db.execute("SELECT 1 FROM messages WHERE group_id=? AND processed=0 AND sender_type='ai' LIMIT 1", (self.group,)).fetchone():

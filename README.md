@@ -13,6 +13,56 @@ The previous Gemini scheduler and custom MCP bridge are preserved unchanged in
 
 ## Setup
 
+**Background chat monitoring is off in all rooms.** Each room synchronizes history
+once on startup/restart to catch up after downtime, without starting a conversation.
+Afterward, elapsed idle polling intervals do not fetch history. Kin-chosen check-ins and
+active conversations still run, including their required context/recovery reads.
+Use **Sync history** to import app-side changes without starting a conversation;
+use **Trigger check-in** to sync and respond to pending private-room messages, or
+**Start conversation** for a fresh opener. Local dashboard refreshes remain free of
+Kindroid reads. See [ADR-027](docs/adr/ADR-027-no-passive-chat-monitoring.md).
+Startup sync respects quiet hours and existing provider cooldown (deferred until
+open), works while paused without resuming, and does not automatically retry a
+failed attempt. Activity reports its outcome. One sync may require several counted
+history pages; manual **Sync history** remains available for retry.
+
+**Current scheduling:** every Kin and room now uses Kin-chosen check-ins. The
+Daily Schedule panel, shared daily-start controls and exploration invitations
+(including automatic follow-ups) are retired. Old scheduling flags/allocations
+cannot re-enable them. Six-hour fallback, missed-appointment recovery, explicit
+no-follow-up, check-in budgets and per-Kin quiet hours remain. Existing exploration
+records are retained for inspection. See [current scheduling and upgrade details](docs/multi-room-operations.md).
+Pause and wait for in-flight work, safely restart the development host, then reload
+the dashboard. No migration, database reset or configuration rewrite is needed.
+
+Earlier feature-delivery notes below are historical where they describe invitations
+or daily schedules; the current policy above supersedes those behaviours.
+
+Development dashboard: use
+`.\.venv\Scripts\kindroid-relay.exe --env-file .\var\local-test\test.env serve`
+and open `http://127.0.0.1:8766`. Plain `serve` below uses the default configuration.
+Development has separate local state; its Kindroid provider is not mocked.
+
+Room selection now uses buttons with one active room. **Activity** defaults to
+collapsed session/outcome groups; expand one or choose **All events**. New
+conversations have durable session IDs. Older events are grouped from retained
+command/cycle boundaries; incomplete history is not a full session transcript.
+Warnings remain visible in summaries.
+
+New check-in activity and text logs use the selected room's configured companion
+name for offered, answered, declined and pending-message outcomes. Safely restart
+the host to load this wording fix; existing stored event summaries are preserved.
+
+**Schedule → Companion quiet hours** saves separate hours for each companion
+across their rooms. The shared room waits while either is resting. These windows
+start disabled, use the server's timezone, and hold work at worker/turn boundaries;
+a turn underway may finish. An encounter missed by over an hour gets a recovery
+check-in offering now or rescheduling. Missing/invalid timing gets a six-hour
+system retry shifted to the next open minute. Explicit no-follow-up choices,
+pause, budgets and uncertain deliveries remain respected. Safely restart the
+development host and reload the dashboard; no migration is needed. See
+[scheduling and quiet hours](docs/multi-room-operations.md).
+
 **Multiple rooms and participant-chosen encounters** are available as an opt-in
 extension (schema 12). `RELAY_PARTICIPANT_SCHEDULING=true` lets the companion choose
 the next encounter, governing both check-ins and exploration. Encounters offer
@@ -163,6 +213,12 @@ Or start the relay together with its localhost operational dashboard:
 The default dashboard address is `http://127.0.0.1:8765`. The original `run`
 command remains available as a headless recovery mode.
 
+An intentional keyboard interrupt in `serve` now ends with `Relay shutdown
+requested.` instead of the asyncio `CancelledError`/`KeyboardInterrupt` traceback.
+The host still requests worker shutdown and waits up to 30 seconds; its warning
+remains visible if work has not stopped. Pause and wait for in-flight work before
+stopping the host. Real startup/server failures still report an error.
+
 The dashboard includes status, current command and elapsed time, schedule and
 quota, recent command outcomes, delivery health, approvals, activity, and group
 messages. A compact second-row tab bar separates **Info** (status, controls,
@@ -190,9 +246,10 @@ Use **Messages → Sync Kindroid history** to request a fresh history pull. This
 queues one serialized worker operation, including pagination when needed, then
 reloads the saved messages automatically. Its inline status survives page reloads
 through the command history and reports new-message counts or a specific blocker:
-API cooldown, exhausted rolling allowance, not-yet-confirmed local messages, or
+API cooldown, not-yet-confirmed local messages, or
 ambiguous delivery/generation. Normal minimum spacing and every page's history
-budget still apply; there is no force/bypass option or automatic retry loop.
+accounting still apply; the local threshold never blocks sync. Provider cooldown
+remains enforced and there is no automatic retry loop.
 
 Sync works while paused and never resumes the relay, sends a message, requests
 generation, or repeats an uncertain effect. It can reconcile an existing effect
@@ -206,9 +263,9 @@ failures include a fixed, privacy-safe explanation (missing predecessor/reply,
 changed response text, requested speaker missing, or multiple possible replies).
 Blocked reconciliation leaves the saved transcript unchanged, so it can differ
 from the app. Do not repeatedly resume or reset the database to bypass this.
-When running, newly imported Hannah messages remain pending for normal automatic
-processing; already-due schedules and later polling are not disabled. Sync itself
-does not force an extra immediate polling cycle. The first sync of an uninitialized
+Newly imported companion messages remain pending. Sync alone does not start a new
+conversation; an existing active session, the next scheduled check-in or a manual
+Trigger check-in can process them. Idle history polling is disabled. The first sync of an uninitialized
 relay imports history as already processed, without replaying old conversations.
 
 The sync control requires a safe host restart and page reload after updating;
@@ -239,26 +296,38 @@ chosen post-result setting. Only this local decision authorizes the action.
 Diagnostic logs remain collapsed until requested, are redacted and bounded, and
 use conditional refreshes when unchanged. Rotated history is not reconstructed.
 
-The service polls after five minutes following activity and backs off to ten
-minutes after an empty cycle. During an active exchange, the relay records any
+The service does not poll idle chats. During an active exchange, the relay records any
 reply text returned by Kindroid's generation call durably and passes it directly
 to Codex. The live endpoint has also been observed to return a successful empty
-body after Hannah replies. In that case the relay makes **one budgeted history
+body after Hannah replies. In that case the relay makes **one measured history
 synchronization** (including pagination if needed) to recover the existing reply;
 it does not repeat generation or poll history in a retry loop. It pauses
 after eight consecutive Codex replies by default. A history
 429 is never retried immediately: `Retry-After` is honored when present, otherwise
 the relay starts a durable one-hour cooldown and exponentially backs off repeated
-429s. The dashboard shows the cooldown and last 429. Successful replies are
+429s. An actual history 429 fails the current session and pauses its room; shared
+sessions end without discarding uncertain-generation evidence. The affected command
+is failed even if a send already succeeded. After cooldown, sync/reconcile while
+paused and resume separately; the local counter reset never resumes a session.
+The dashboard shows the cooldown and last 429. Successful replies are
 durably linked to their source message so recovery cannot post them twice.
 
-History is synchronized before a relay cycle, manual opener, scheduled check-in,
+History is synchronized at active conversation boundaries, manual openers, scheduled check-ins,
 or approved execution. Long exchanges synchronize before the next Codex turn once
 `RELAY_POLL_SECONDS` has elapsed since the last context sync (five minutes by
 default). Each Codex turn receives a recent 50-message local context snapshot,
 including directly received replies. Messages sent through the Kindroid app are
 seen at the next synchronization. The 15-second minimum applies between history
 requests, including pagination; it is not a reply polling interval.
+
+**History reads (local)** is an account-wide measurement, not a hard limit.
+`RELAY_MAX_HISTORY_REQUESTS_24H` sets its warning threshold: reaching or exceeding
+it only warns in the UI and never blocks work. The counter resets at **00:00 UTC
+every day**, including across restarts or downtime; the dashboard shows the next
+reset in local time. Failed requests and every pagination request count too.
+This local reporting day is not a claim about Kindroid's server reset boundary or
+usage from other clients. Check-in budgets remain separate and unchanged. See
+[ADR-026](docs/adr/ADR-026-advisory-daily-history-measurement.md).
 
 Locally recorded messages keep stable IDs when later history supplies the remote
 IDs. The dashboard marks name/time information as awaiting history confirmation
@@ -275,8 +344,9 @@ private response and exception bodies are excluded. Older generic uncertainty
 events cannot retrospectively identify which failure occurred.
 
 The `generation_history_fallback` events show when an empty-body reply is being
-recovered, was recovered, or must wait for a history cooldown. A cooldown defers
-recovery to a later cycle without retrying generation. A missing, ambiguous, or
+recovered, was recovered, or must wait for a history cooldown. A server rejection
+pauses the session; recovery requires a later explicit sync without retrying
+generation. A missing, ambiguous, or
 otherwise unconfirmed reply after the fallback still pauses the relay. If Kindroid
 consistently returns empty bodies, each generated reply needs this history sync;
 the optimization cannot remove those reads without a reliable reply-text source.
@@ -346,68 +416,31 @@ actual launch at the next Windows sign-in is an operator acceptance check.
 
 ## Schedule tab
 
-The **Schedule** tab divides one daily tick pool between **Check-ins** and
-**Exploration invitations**. Adjust either percentage or the balance slider; the
-other share follows so the total stays 100%. The 24-hour graph updates immediately
-and spreads whole ticks across the available hours. Select **15 mins**, **30 mins**
-or **60 mins** in the button row. Existing schedules default to 60 minutes until
-you save a different interval. At 60 minutes, a full day with 40/60 gives
-10/14 ticks. Dead time 22:00–06:00 leaves ticks at 06:00 through 21:00 and gives
-6 check-ins / 10 exploration invitations.
+The Schedule tab now contains **Companion quiet hours** only. The full Daily
+Schedule panel, tick allocation/history editor, shared daily-start controls and
+discovery configuration have been removed globally.
 
-Click an hour in the graph to toggle dead time, or add whole-hour start/end blocks
-below it. Multiple and overnight blocks are supported; overlapping blocks count
-once. Matching start/end blocks the full day. Remove a block, toggle its individual
-hours, or clear all dead time. Tab/Space operate graph buttons with the keyboard.
-This release has one recurring daily plan and whole-hour dead-time boundaries.
-Each hour on the graph shows one, two or four ticks for the selected interval.
-With 16 available hours, 15/30/60-minute intervals provide 64/32/16 ticks. At 40/60,
-those allocate 26/38, 13/19 and 6/10 check-ins/exploration invitations respectively.
-Changing intervals recalculates the preview; **Save schedule** applies the change
-to future ticks. Existing outcomes and rolling budget usage are preserved.
+The Kins choose their next check-in in each room. Missing or unusable timing gets
+a durable six-hour fallback shifted to the next open minute; an appointment missed
+by over an hour gets a check-in explaining the miss and offering now or another
+time. Explicit no-follow-up prevents automatic retries. Either companion can
+choose the shared room's next time through its existing conversation checks.
 
-**Save schedule** queues a local change, follows its outcome and persists it in
-SQLite. Until the first save, existing environment-based timing remains active.
-After saving, the shared schedule replaces both old timers and quiet-hour windows;
-unchecking **Enable scheduled activities** and saving stops both automatic starters.
-It also removes the extra conversation-inactivity cooldown for check-ins,
-exploration invitations and bounded experience follow-through. Recent completed
-messages alone do not suppress a tick, including newly synchronized Marc messages.
-Pending Hannah replies, running commands, unresolved exploration and uncertain
-delivery/generation still block new starts. Dead time and all API/history limits
-remain. This correction needs a safe host restart, not a schedule re-save or new
-migration; old skipped ticks are not caught up. See
-[ADR-019](docs/adr/ADR-019-shared-ticks-without-inactivity-cooldown.md).
-Changing a schedule applies to future ticks, never sends immediately, and never
-resumes a paused relay. Existing conversations can continue through dead time;
-manual controls remain available. The shared clock requires the combined `serve`
-host; headless `run` does not execute shared ticks.
+Use **Next encounter** for a room-specific operator override, and **Info →
+Check-in budget** for the rolling allowance. Quiet hours are specific to each Kin
+and apply across all rooms they join; shared work waits while either is resting.
+Old daily enable/dead-hour settings no longer govern starts. Pause and uncertain
+delivery still block work. No exploration invitation or automatic follow-up is sent.
 
-The tab also edits rolling limits for check-in attempts, all exploration invitations,
-scheduled exploration attempts and reserved interpretation calls. Existing defaults
-are loaded, not raised automatically: the old two-attempt exploration default can
-block most of a 14-tick allocation. Warnings identify insufficient limits and
-disabled capabilities. Automatic interpretation reserves two calls per invitation.
-Prior usage remains charged when limits change; scheduled and manual exploration
-share the invitation limit. The Info check-in limit controls the same override.
-`RELAY_EXPLORATION_ENABLED=true` and `RELAY_INITIATIVE_ENABLED=true` remain the
-respective capability prerequisites. Saving an enabled shared schedule replaces
-the old `RELAY_CURIOSITY_ENABLED` scheduling switch.
+Safely restart the host and reload the dashboard. Existing schedules and
+exploration records are retained for audit; no migration or database reset is
+needed. See [the operator guide](docs/multi-room-operations.md) and
+[ADR-025](docs/adr/ADR-025-kin-driven-check-ins-without-invitations.md).
 
-Times use the relay computer's local timezone, even from a browser elsewhere.
-On daylight-saving transitions, nonexistent hours are skipped and repeated hours
-run once at the first occurrence. The graph represents the nominal 24-hour day;
-actual starts may be fewer. Pause, unfinished work, unresolved delivery and API
-limits still apply. A tick has a three-minute start window and is an opportunity,
-not an hour of work. Skipped or missed ticks do not accumulate for catch-up.
-Today's recorded outcomes appear in graph details; the recent list shows up to 192
-ticks (two full days at 15 minutes). Downtime is not expanded into one record per missed tick.
+## Idle Initiative (historical timing; retired)
 
-Upgrade requires a safe host restart to apply migration 10, then a page reload.
-No live configuration is changed by updating the checkout. See
-[ADR-016](docs/adr/ADR-016-shared-daily-schedule.md) for scheduling and recovery rules.
-
-## Idle Initiative (legacy timing until a schedule is saved)
+The fixed-hour/interval configuration below is historical and no longer selects
+check-in times. The rolling budget and explicit local controls remain supported.
 
 At 00:00, 06:00, 12:00, and 18:00 local time, Codex posts a short,
 context-aware check-in that explicitly asks whether anything is on Hannah's
@@ -441,8 +474,8 @@ history changes the next scheduled check. Speaker metadata and outbound linkage
 still determine attribution, not permission to initiate. The dashboard
 shows the command's actual outcome beside the control and in recent commands:
 sent/answered, sent without Hannah taking the turn, or skipped with its reason.
-Initial bootstrap skips the check-in without replaying old history; trigger again
-after bootstrap completes. Daily-budget and quiet-hour skips remain deliberate.
+The first requested check-in imports initial history without replaying old messages
+and proceeds in that command. Daily-budget and quiet-hour skips remain deliberate.
 
 The default initiative budget is **50 check-in attempts per rolling 24 hours**
 (not a midnight reset). Use the dashboard's **Check-in budget** panel to view

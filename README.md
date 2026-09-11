@@ -13,6 +13,32 @@ The previous Gemini scheduler and custom MCP bridge are preserved unchanged in
 
 ## Setup
 
+**Multiple rooms and participant-chosen encounters** are available as an opt-in
+extension (schema 12). `RELAY_PARTICIPANT_SCHEDULING=true` lets the companion choose
+the next encounter, governing both check-ins and exploration. Encounters offer
+exploration as a choice. `RELAY_ROOMS_FILE` configures isolated Hannah/Codex,
+Miko/Codex and Hannah/Miko rooms under one worker. The shared room supports daily
+sessions, silent alternation, keyword-triggered Codex assistance and session end.
+Farewell phrases now request an early silent ending check before the next reply;
+every assistance call also checks whether the conversation has finished. Activity
+shows each check's trigger and bounded continue/end reason. Keywords alone never
+stop a session. Restart the host to load this change; no new migration is needed.
+Typing directly into the shared chat now continues the session from updated
+history at its next synchronization, without extra polling or a Codex handoff.
+For a room paused by the old interjection bug, restart with updated code, then
+**Sync Kindroid history** successfully in that room before **Resume**. Preserve
+the existing database; genuine delivery ambiguity still requires inspection.
+For an ambiguous **uncaptured shared generation**, the selected room now offers
+**Recover interrupted relay session** while paused (schema 13). Confirming ends
+only the relay session, imports fresh history and preserves the uncertain request
+for audit without retrying it. Then use **Resume**, followed by **Start
+conversation** when ready. This does not reset the Kindroid group. Back up and
+restart the host safely before using the new control.
+See [configuration, controls and recovery](docs/multi-room-operations.md),
+[implementation checklist](docs/multi-room-implementation-plan.md), and
+[example room configuration](rooms.example.json). Back up and safely restart;
+real-model, disposable-group and Pi acceptance remain outstanding.
+
 **Discovery and bounded experiences** are available under **Schedule → Discovery
 sources & follow-through**. Choose catalog/memory, creative possibilities,
 previously chosen interests, world news or an optional public local-news area.
@@ -173,6 +199,13 @@ generation, or repeats an uncertain effect. It can reconcile an existing effect
 when history uniquely confirms it. If history is still missing or ambiguous,
 sync remains incomplete and the existing cursor/link safeguards remain in place.
 Successful reconciliation leaves a paused relay paused; Resume is separate.
+The command's stored `completed` status means execution finished, not that sync
+succeeded. Only `sync_outcome=synced` or `bootstrapped` confirms success. The UI
+labels unsuccessful outcomes **blocked**, with a warning in activity. Matching
+failures include a fixed, privacy-safe explanation (missing predecessor/reply,
+changed response text, requested speaker missing, or multiple possible replies).
+Blocked reconciliation leaves the saved transcript unchanged, so it can differ
+from the app. Do not repeatedly resume or reset the database to bypass this.
 When running, newly imported Hannah messages remain pending for normal automatic
 processing; already-due schedules and later polling are not disabled. Sync itself
 does not force an extra immediate polling cycle. The first sync of an uninitialized
@@ -527,7 +560,7 @@ or a missing Codex thread.
 For upgrades, create and check a backup first, pause and safely stop the old host,
 then update the checkout and reinstall with
 `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"`. Startup applies numbered
-migrations; current schema is 11 (including discovery sources and bounded experiences).
+migrations; current schema is 12 (including isolated room encounters and shared sessions).
 Backup support itself required no schema change. Keep the previous code revision together with its pre-upgrade
 backup; downgrading code against a newer database is not a rollback procedure.
 

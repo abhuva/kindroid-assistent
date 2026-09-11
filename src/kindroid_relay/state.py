@@ -132,7 +132,7 @@ class ProcessLock:
 
 
 class RelayState:
-    def __init__(self, path: Path, *, migrate: bool = True) -> None:
+    def __init__(self, path: Path, *, migrate: bool = True, account_path: Path | None = None) -> None:
         self.path = path
         if migrate:
             migrate_database(path)
@@ -142,9 +142,13 @@ class RelayState:
         self.activity = ActivityStore(self.connection)
         self.worker_status = WorkerStatusStore(self.connection)
         self.turns = TurnStore(self.connection)
+        self.account = (RelayState(account_path, migrate=migrate)
+                        if account_path is not None and account_path.resolve() != path.resolve() else None)
 
     def close(self) -> None:
         self.connection.close()
+        if self.account is not None:
+            self.account.close()
 
     def __enter__(self) -> "RelayState":
         return self
@@ -157,12 +161,17 @@ class RelayState:
             yield self.connection
 
     def get_meta(self, key: str, default: str | None = None) -> str | None:
+        if self.account is not None and key in ACCOUNT_META:
+            return self.account.get_meta(key, default)
         row = self.connection.execute(
             "SELECT value FROM metadata WHERE key = ?", (key,)
         ).fetchone()
         return str(row["value"]) if row else default
 
     def set_meta(self, key: str, value: str | int | bool) -> None:
+        if self.account is not None and key in ACCOUNT_META:
+            self.account.set_meta(key, value)
+            return
         serialized = "1" if value is True else "0" if value is False else str(value)
         with self.connection:
             self.connection.execute(
@@ -375,6 +384,9 @@ class RelayState:
             )
 
     def record_history_request(self, maximum: int) -> None:
+        if self.account is not None:
+            self.account.record_history_request(maximum)
+            return
         now = int(time.time())
         cutoff = now - 86400
         with self.connection:
@@ -393,6 +405,8 @@ class RelayState:
             )
 
     def history_request_count(self) -> int:
+        if self.account is not None:
+            return self.account.history_request_count()
         cutoff = int(time.time()) - 86400
         return int(
             self.connection.execute(
@@ -508,15 +522,20 @@ class RelayState:
         }
 
 
+ACCOUNT_META = frozenset({'last_history_request_at_ms', 'history_cooldown_until',
+                          'history_last_429_at', 'history_rate_limit_streak'})
+
+
 class RelayStateFactory:
     """Creates thread-owned state connections after startup migration."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, account_path: Path | None = None) -> None:
         self.path = path
+        self.account_path = account_path
 
     @contextmanager
     def connect(self) -> Iterator[RelayState]:
-        state = RelayState(self.path, migrate=False)
+        state = RelayState(self.path, migrate=False, account_path=self.account_path)
         try:
             yield state
         finally:

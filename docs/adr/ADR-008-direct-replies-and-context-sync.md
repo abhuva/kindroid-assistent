@@ -106,6 +106,10 @@ message editing/replacement remains outside this correction.
 
 ## Consequences
 
+For shared-room generations only, [ADR-021](ADR-021-shared-room-interjections.md)
+amends the user-message boundary and competing-speaker rules to permit app
+participation. Private outbox-backed reply windows retain the rules above.
+
 - Replies containing text consume no additional history calls. Empty successful
   responses require one synchronization before Codex can answer; if every response
   is empty, every generated reply still needs that synchronization.

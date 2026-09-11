@@ -15,9 +15,40 @@ from .models import ChatMessage
 class ReconciliationError(RuntimeError):
     """History cannot safely be associated with a locally recorded effect."""
 
+    def __init__(self, message: str, *, reason: str = 'unresolved'):
+        super().__init__(message)
+        self.reason = reason
+
 
 class ReconciliationPending(RuntimeError):
     """A successful effect is not visible in history yet; defer context work."""
+
+    def __init__(self, message: str, *, reason: str = 'local_message_unconfirmed'):
+        super().__init__(message)
+        self.reason = reason
+
+
+RECONCILIATION_REASONS = {
+    'unresolved': 'History could not be safely associated with local effects.',
+    'local_message_unconfirmed': 'A locally captured message is not yet confirmed in fetched history.',
+    'generation_unconfirmed': 'An interrupted generation has no confirmed history response.',
+    'outbound_ambiguous': 'Repeated outgoing text has more history matches than recorded sends.',
+    'anchor_unconfirmed': 'The saved predecessor has no confirmed Kindroid message ID.',
+    'anchor_missing': 'The saved predecessor is absent from the fetched history window.',
+    'reply_missing': 'No usable reply follows the saved predecessor in the fetched history window.',
+    'requested_reply_missing': 'No unclaimed reply from the requested companion matches the history window.',
+    'response_text_changed': 'Replies from the requested companion exist, but none match the captured response text.',
+    'multiple_matching_replies': 'More than one reply matches this generation; choosing one would risk incorrect linkage.',
+    'private_window_conflict': 'The private exchange contains additional or conflicting replies.',
+}
+
+
+def reconciliation_diagnostic(exc: ReconciliationError | ReconciliationPending) -> dict[str, str]:
+    """Only fixed reason codes/text may leave the matching boundary, never str(exc)."""
+    reason = getattr(exc, 'reason', 'unresolved')
+    if not isinstance(reason, str) or reason not in RECONCILIATION_REASONS:
+        reason = 'unresolved'
+    return {'reason_code': reason, 'reason_detail': RECONCILIATION_REASONS[reason]}
 
 
 class EmptyGeneratedReply(ReconciliationError):
@@ -72,6 +103,18 @@ class TurnStore:
     def for_outbox(self, outbox_id: str) -> sqlite3.Row | None:
         return self.connection.execute("SELECT * FROM generation_turns WHERE outbox_id = ?", (outbox_id,)).fetchone()
 
+    def begin_after(self, group_id: str, ai_id: str, name: str, anchor_id: str, after: int) -> str:
+        if self.has_uncertain():
+            raise ReconciliationError('Previous generation must be reconciled before advancing')
+        anchor = self.connection.execute('SELECT group_id FROM messages WHERE remote_id=?', (anchor_id,)).fetchone()
+        if anchor is None or anchor['group_id'] != group_id:
+            raise ReconciliationError('Generation requires a predecessor in this room')
+        turn_id = 'local-ai:' + uuid.uuid4().hex
+        # Caller can compose this insert with session linkage in one transaction.
+        self.connection.execute('INSERT INTO generation_turns VALUES(?,?,?,?,NULL,?,?,?,?)',
+            (turn_id, group_id, ai_id, name, anchor_id, 'generating', after, int(time.time())))
+        return turn_id
+
     def complete(self, turn_id: str, body: str) -> ChatMessage:
         if not body.strip():
             raise EmptyGeneratedReply("Kindroid generation returned an empty reply")
@@ -92,20 +135,20 @@ class TurnStore:
             self.connection.execute("UPDATE generation_turns SET status = 'uncertain' WHERE id = ? AND status = 'generating'", (turn_id,))
 
     def has_uncertain(self) -> bool:
-        return self.connection.execute("SELECT 1 FROM generation_turns WHERE status IN ('generating', 'uncertain') LIMIT 1").fetchone() is not None
+        return self.connection.execute("SELECT 1 FROM active_generation_turns WHERE status IN ('generating', 'uncertain') LIMIT 1").fetchone() is not None
 
     def sync_cursor(self, group_id: str, cursor: int) -> int:
         row = self.connection.execute("""
             SELECT MIN(value) FROM (
                 SELECT sync_after AS value FROM messages WHERE group_id = ? AND kindroid_id IS NULL
-                UNION ALL SELECT after_timestamp FROM generation_turns WHERE group_id = ? AND status != 'reconciled'
+                UNION ALL SELECT after_timestamp FROM active_generation_turns WHERE group_id = ? AND status != 'reconciled'
             )
         """, (group_id, group_id)).fetchone()
         return min(cursor, row[0]) if row[0] is not None else cursor
 
     def require_reconciled(self, group_id: str) -> None:
         if self.has_uncertain():
-            raise ReconciliationError("Kindroid generation remains uncertain; synchronize history before continuing")
+            raise ReconciliationError("Kindroid generation remains uncertain; synchronize history before continuing", reason='generation_unconfirmed')
         if self.connection.execute("SELECT 1 FROM messages WHERE group_id = ? AND kindroid_id IS NULL LIMIT 1", (group_id,)).fetchone():
             raise ReconciliationPending("Locally recorded messages are not yet visible in Kindroid history; context work deferred")
 
@@ -154,10 +197,12 @@ class TurnStore:
     def reconcile(self, group_id: str, history: list[ChatMessage]) -> set[str]:
         """Match outbound anchors, then their AI replies, in one transaction.
 
-        Ambiguous repeated text or interleaved participants stops reconciliation.
+        Ambiguous repeated text stops reconciliation. Shared generations may
+        cross external app interjections, but private reply windows stay strict.
         No body-only global deduplication and no invented remote IDs.
         """
         bound: set[str] = set()
+        missing_reason = None
         with self.connection:
             known = {row[0] for row in self.connection.execute("SELECT kindroid_id FROM messages WHERE kindroid_id IS NOT NULL")}
             users = self.connection.execute("""
@@ -177,24 +222,34 @@ class TurnStore:
                 if len(matches) < len(peers):
                     raise ReconciliationPending("Repeated local sends are not all visible in history; context work deferred")
                 if len(matches) != len(peers):
-                    raise ReconciliationError("Ambiguous outbound history association; inspect conversation before continuing")
+                    raise ReconciliationError("Ambiguous outbound history association; inspect conversation before continuing", reason='outbound_ambiguous')
                 for peer, remote in zip(peers, matches):
                     self._bind(peer["remote_id"], remote)
                     bound.add(peer["remote_id"])
                     known.add(remote.id)
 
-            turns = self.connection.execute("SELECT * FROM generation_turns WHERE group_id = ? AND status != 'reconciled' ORDER BY rowid", (group_id,)).fetchall()
+            turns = self.connection.execute("SELECT * FROM active_generation_turns WHERE group_id = ? AND status != 'reconciled' ORDER BY generation_order", (group_id,)).fetchall()
+            outbound_ids = {r[0] for r in self.connection.execute('''
+                SELECT m.kindroid_id FROM messages m JOIN outbox o ON m.remote_id='local-user:' || o.id
+                WHERE m.group_id=? AND m.kindroid_id IS NOT NULL AND o.status='sent'
+            ''', (group_id,))}
             for turn in turns:
                 anchor = self.connection.execute("SELECT kindroid_id FROM messages WHERE remote_id = ?", (turn["anchor_message_id"],)).fetchone()
                 if anchor is None or anchor[0] is None:
+                    missing_reason = missing_reason or 'anchor_unconfirmed'
                     continue
                 positions = [i for i, m in enumerate(history) if m.id == anchor[0]]
                 if not positions:
+                    missing_reason = missing_reason or 'anchor_missing'
                     continue
                 following = []
                 for remote in history[positions[0] + 1:]:
                     if remote.sender_type == "user":
-                        break
+                        if turn['outbox_id'] is not None or remote.id in outbound_ids:
+                            break
+                        # A person can type while the relay is waiting/generating.
+                        # This is conversation content, not a new relay effect.
+                        continue
                     # Kindroid may append an empty AI record after the real answer.
                     # It is not a competing reply or evidence generation succeeded.
                     # Keep other speakers/roles and user boundaries conservative.
@@ -202,12 +257,28 @@ class TurnStore:
                         continue
                     following.append(remote)
                 local = self.connection.execute("SELECT * FROM messages WHERE remote_id = ?", (turn["id"],)).fetchone()
-                candidates = [m for m in following if m.id not in known and self._same_ai(m, turn)
-                              and (local is None or m.message.strip() == local["body"].strip())]
+                speaker_candidates = [m for m in following if m.id not in known and self._same_ai(m, turn)]
+                candidates = [m for m in speaker_candidates
+                              if local is None or m.message.strip() == local["body"].strip()]
                 if not following:
+                    missing_reason = missing_reason or 'reply_missing'
                     continue
+                if turn['outbox_id'] is None:
+                    # Match the requested AI and direct response text, if present,
+                    # even when an app-driven reply intervenes. The predecessor and
+                    # next relay post bound the search; never use global text dedup.
+                    if len(candidates) != 1:
+                        reason = ('multiple_matching_replies' if len(candidates) > 1 else
+                                  'response_text_changed' if speaker_candidates and local is not None else
+                                  'requested_reply_missing')
+                        raise ReconciliationError('Shared reply has no unique matching response in its history window', reason=reason)
+                    # Without returned text, only a single unclaimed response
+                    # from the requested AI is sufficient. Other identified AIs
+                    # cannot be the result of this generation; a second response
+                    # from the requested AI remains genuinely ambiguous.
+                    following = candidates
                 if len(candidates) != 1 or len(following) != 1:
-                    raise ReconciliationError("Ambiguous generated reply in history; inspect conversation before continuing")
+                    raise ReconciliationError("Ambiguous generated reply in history; inspect conversation before continuing", reason='private_window_conflict')
                 remote = candidates[0]
                 if local is None:
                     self._insert_local(turn["id"], group_id, turn["ai_id"], "ai", turn["display_name"], remote.message, turn["after_timestamp"])
@@ -217,5 +288,10 @@ class TurnStore:
             # Commit aliases together only after the entire window is resolved.
             # Otherwise a partial sync could lose the later attribution audit or
             # make a potential copy look like an independently received event.
-            self.require_reconciled(group_id)
+            try:
+                self.require_reconciled(group_id)
+            except (ReconciliationError, ReconciliationPending) as exc:
+                if missing_reason:
+                    exc.reason = missing_reason
+                raise
             return known

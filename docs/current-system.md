@@ -15,6 +15,11 @@ failure, reload, and restart behavior; live/browser release acceptance is pendin
 
 ## Repository state
 
+**2026-09-10 update:** Schema 12 adds chosen encounters and shared companion
+sessions. `rooms.py`, `room_worker.py`, `encounters.py` and `shared.py` implement
+the opt-in multi-room extension. See [the current operator guide](multi-room-operations.md).
+The pre-dashboard sections below remain a historical baseline.
+
 **2026-09-08 discovery update:** Current schema is 11. New `discovery.py`,
 `public_sources.py` and `experience.py` implement default-off public stimuli and
 bounded lookup/result/reflection. See [operator guide](discovery-and-experiences.md).

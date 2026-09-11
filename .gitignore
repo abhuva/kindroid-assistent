@@ -1,5 +1,6 @@
 # Credentials and local configuration
 kindroid.env
+rooms.json
 .env
 
 # Relay runtime state

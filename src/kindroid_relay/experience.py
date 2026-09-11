@@ -88,7 +88,7 @@ class ExperienceStore:
                     continue
                 statement = MemoryStore(self.db, self.group).save({'message_id': source['remote_id'],
                     'quote': source['body'][:2000], 'start': 0, 'kind': 'observation',
-                    'interpretation': 'Hannah response to a bounded public-source experience; no adoption or authority inferred.',
+                    'interpretation': 'Companion response to a bounded public-source experience; no adoption or authority inferred.',
                     'temporal_scope': 'after this exploration experience', 'entities': []},
                     origin='system_selection', version='exploration-experience-v1')
                 self.db.execute("UPDATE exploration_experiences SET reflection_statement_id=?,status='complete',note='Reflection recorded; no automatic promotion or further prompt' WHERE session_id=?",
@@ -116,7 +116,7 @@ class Experiences:
             return False
         db = app.state.connection
         return not (db.execute("SELECT 1 FROM outbox WHERE status IN ('pending','sending','uncertain')").fetchone()
-            or db.execute("SELECT 1 FROM generation_turns WHERE status!='reconciled'").fetchone())
+            or db.execute("SELECT 1 FROM active_generation_turns WHERE status!='reconciled'").fetchone())
 
     def advance(self) -> bool:
         app, store = self.app, self.store

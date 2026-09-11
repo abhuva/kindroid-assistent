@@ -20,6 +20,7 @@
     }
 
     async request(path, options = {}) {
+      const roomPrefix = globalScope.location?.pathname?.match(/^\/rooms\/[a-z][a-z0-9_-]*\//)?.[0]?.replace(/\/$/, "") || "";
       const headers = { Accept: "application/json", ...(options.headers || {}) };
       if (options.method && options.method !== "GET") {
         headers["Content-Type"] = "application/json";
@@ -32,7 +33,7 @@
       let timedOut = false;
       const timeout = setTimeout(() => { timedOut = true; abort(); }, 10000);
       try {
-        const response = await this.fetchImpl(path, {
+        const response = await this.fetchImpl(roomPrefix + path, {
           cache: "no-store",
           ...options,
           headers,

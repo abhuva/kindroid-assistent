@@ -378,7 +378,7 @@ def test_migration_preserves_previous_schedule_and_metadata(tmp_path):
     connection.execute("INSERT INTO metadata VALUES ('kept','yes')")
     connection.execute("INSERT INTO curiosity_schedule VALUES ('g1','old-basis',123,100)")
     connection.commit(); connection.close()
-    assert migrate_database(path) == [10, 11]
+    assert migrate_database(path) == [10, 11, 12, 13]
     with RelayState(path) as state:
         assert state.get_meta('kept') == 'yes'
         assert state.connection.execute('SELECT next_due_at FROM curiosity_schedule').fetchone()[0] == 123

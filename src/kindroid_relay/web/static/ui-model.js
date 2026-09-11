@@ -56,7 +56,7 @@
       disabled: "Skipped: initiative checks are disabled",
       bootstrapped: "Skipped: initial history loaded; trigger again to check in",
       daily_budget: "Skipped: daily check-in budget exhausted",
-      pending_message: "Skipped: Hannah already has a pending message",
+      pending_message: "Skipped: a companion already has a pending message",
       empty_room: "Skipped: group history is empty",
       latest_not_codex: "Skipped: legacy last-speaker rule",
       recent_conversation: "Skipped: conversation is recent or its time is unknown",
@@ -64,8 +64,8 @@
       quiet_hours: "Skipped: quiet hours",
       missed: "Skipped: scheduled time was missed",
       check_in_sent: "Check-in sent",
-      check_in_answered: "Check-in sent; Hannah answered",
-      check_in_sent_user_turn: "Check-in sent; Hannah did not take the offered turn",
+      check_in_answered: "Check-in sent; companion answered",
+      check_in_sent_user_turn: "Check-in sent; companion did not take the offered turn",
       check_in_waiting_for_history: "Check-in sent; waiting for history cooldown",
     };
     const isCheckIn = command.command_type === "trigger_initiative" && command.status === "completed";
@@ -76,6 +76,11 @@
       detail = `Saved daily check-in limit: ${command.result?.limit ?? "unknown"}`;
     }
     const isSync = command.command_type === "sync_history";
+    const isRecovery = command.command_type === "recover_shared";
+    const recoveryBlocked = isRecovery && command.status === "completed" && !["recovered", "already_recovered"].includes(command.result?.outcome);
+    if (isRecovery && command.status === "completed") detail = recoveryBlocked
+      ? `Recovery blocked: ${command.result?.reason || "Inspect room activity."}`
+      : "Relay session recovered; uncertain request retained without retry. Resume and start a new conversation when ready.";
     const syncSucceeded = ["synced", "bootstrapped"].includes(command.result?.sync_outcome);
     if (isSync && command.status === "completed") {
       const result = command.result || {};
@@ -85,10 +90,11 @@
         history_cooldown: `Sync blocked: API cooldown${result.retry_at ? ` until ${new Date(result.retry_at * 1000).toLocaleString()}` : ""}.`,
         history_budget: "Sync blocked: rolling history-read allowance exhausted.",
         history_pending: "History fetched, but local messages are not yet confirmed. Sync remains incomplete; try again later.",
-        reconciliation_unresolved: "History fetched, but delivery/generation remains ambiguous. Inspect before resuming; nothing was retried.",
+        reconciliation_unresolved: "Sync blocked: history was fetched, but delivery/generation remains ambiguous. Saved history was not updated; do not resume yet.",
         history_error: "Kindroid history request failed. No automatic retry.",
       };
       detail = syncLabels[result.sync_outcome] || "History sync outcome unavailable";
+      if (!syncSucceeded && typeof result.reason_detail === "string") detail += ` ${result.reason_detail}`;
       if (result.paused) detail += " Relay remains paused.";
     } else if (isSync && terminal) {
       detail = command.error || "Sync did not complete; inspect command activity.";
@@ -97,9 +103,9 @@
       pending: !terminal,
       terminal,
       detail,
-      text: `${commandName} — ${command.status}${detail ? ` · ${detail}` : ""}`,
+      text: `${commandName} — ${(isSync && command.status === "completed" && !syncSucceeded) || recoveryBlocked ? "blocked" : command.status}${detail ? ` · ${detail}` : ""}`,
       tone: command.status === "completed"
-        ? (isCheckIn && command.result?.check_in_sent !== true) || (isSync && !syncSucceeded) ? "warning" : "success"
+        ? (isCheckIn && command.result?.check_in_sent !== true) || (isSync && !syncSucceeded) || recoveryBlocked ? "warning" : "success"
         : terminal
           ? "error"
           : "pending",

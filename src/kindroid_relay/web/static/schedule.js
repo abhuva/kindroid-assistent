@@ -12,6 +12,7 @@
   const node = (tag, text) => { const n = document.createElement(tag); n.textContent = text; return n; };
 
   function plan(config) {
+    if (data?.participant_scheduling) config = { ...config, weights: { check_in: 100, exploration: 0 } };
     const interval = config.tick_minutes || 60;
     const hours = Array.from({ length: 1440 / interval }, (_, i) => i * interval)
       .filter(m => !config.dead_hours.includes(Math.floor(m / 60)));
@@ -107,6 +108,8 @@
       li.append(remove); list.append(li);
     }
     const warnings = [];
+    if (data?.participant_scheduling) warnings.push("All automatic slots open as check-ins offering exploration. A participant's next-time choice supersedes this tick schedule.");
+    if (data?.room_mode === "shared") warnings.push("This room uses Daily companion session controls above. These legacy tick allocations do not start shared sessions.");
     if (!data.capabilities.check_in && p.counts.check_in) warnings.push("Check-ins are disabled in startup configuration.");
     if (!data.capabilities.exploration && p.counts.exploration) warnings.push("Exploration is disabled. Enable RELAY_EXPLORATION_ENABLED and restart before invitations can run.");
     if (draft.check_in_limit < p.counts.check_in) warnings.push("The check-in limit is below the planned allocation.");
@@ -115,6 +118,12 @@
     if (!p.hours.length) warnings.push("All hours are dead time; no scheduled activities will start.");
     el("schedule-warnings").textContent = warnings.join(" ");
     controls();
+    for (const k of kinds) input(k).disabled = !!data?.participant_scheduling;
+    el("schedule-balance").disabled = !!data?.participant_scheduling;
+    if (data?.room_mode === "shared") {
+      el("schedule-fields").disabled = true;
+      el("schedule-save").disabled = true;
+    }
   }
 
   function receive(snapshot) {

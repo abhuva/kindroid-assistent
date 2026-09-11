@@ -1,0 +1,20 @@
+[
+  {
+    "key": "hannah", "label": "Hannah + Codex", "group_id": "YOUR_EXISTING_GROUP_ID",
+    "mode": "assistant", "participants": [{"id": "HANNAH_AI_ID", "name": "Hannah"}],
+    "participant_scheduling": true
+  },
+  {
+    "key": "miko", "label": "Miko + Codex", "group_id": "MIKO_GROUP_ID",
+    "mode": "assistant", "participants": [{"id": "MIKO_AI_ID", "name": "Miko"}],
+    "participant_scheduling": true
+  },
+  {
+    "key": "together", "label": "Hannah + Miko", "group_id": "SHARED_GROUP_ID",
+    "mode": "shared", "participants": [
+      {"id": "HANNAH_AI_ID", "name": "Hannah"}, {"id": "MIKO_AI_ID", "name": "Miko"}
+    ],
+    "daily_time": "18:00", "check_every": 6, "max_messages": 60,
+    "max_seconds": 3600, "turn_seconds": 30
+  }
+]

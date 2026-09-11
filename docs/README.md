@@ -7,6 +7,31 @@ goals, and self-directed exploration.
 
 ## Current direction
 
+Shared-session endings now have early farewell-triggered checks and explicit
+ending assessment during assistance, with bounded decision activity. See
+[ADR-023](adr/ADR-023-responsive-shared-session-endings.md). The daily start
+schedule is unchanged; real-model recognition remains an acceptance check.
+
+Explicit shared-session recovery is implemented under
+[ADR-022](adr/ADR-022-operator-shared-session-recovery.md). A paused room can end an
+interrupted, uncaptured generation and adopt fresh history without guessing a
+reply association or retrying it. Schema 13 preserves the original audit. See
+[recovery controls](multi-room-operations.md#explicit-recovery-for-an-ambiguous-uncaptured-generation).
+
+Multi-room support and participant-chosen encounters are locally implemented under
+[ADR-020](adr/ADR-020-room-sessions-and-chosen-encounters.md). One worker manages
+isolated rooms with shared account history accounting. A chosen next time governs
+both check-ins and exploration; the shared companion room uses daily sessions,
+silent alternation and keyword assistance. See [operator guide](multi-room-operations.md)
+and the [dedicated task checklist](multi-room-implementation-plan.md). Schema 12;
+live/model/Pi acceptance is separate.
+
+Shared-room app interjections now preserve automatic continuation at the next
+history boundary instead of causing a permanent reconciliation failure or ending
+the session. Stale unsent assistance is cancelled; uncertain effects remain
+guarded. See [ADR-021](adr/ADR-021-shared-room-interjections.md) and the recovery
+steps in the [operator guide](multi-room-operations.md#recover-a-room-paused-after-manual-chat-input).
+
 Reconciliation now ignores matching empty AI records as competing replies, while
 retaining them as processed history. Real competing replies and conflicting
 speakers remain blocked. This allows the observed answer-plus-empty-record case

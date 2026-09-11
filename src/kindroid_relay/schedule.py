@@ -120,6 +120,11 @@ class DailyScheduler:
         return {'revision': revision, 'enabled': config['enabled']}
 
     def gate(self, now: int, activity: str, command_id: str = '', *, synchronized: bool = False) -> str | None:
+        from .encounters import Encounters
+        if self.settings.room_mode == 'shared' or Encounters(self.state, self.settings).controls_schedule():
+            return 'participant_schedule'
+        if self.settings.participant_scheduling:
+            activity = 'check_in'
         config = saved_schedule(self.state, self.group)
         if config is None or not config['enabled']:
             return 'disabled'
@@ -144,7 +149,7 @@ class DailyScheduler:
             return 'pending_message'
         if self.db.execute("SELECT 1 FROM outbox WHERE status IN ('pending','sending','uncertain')").fetchone():
             return 'delivery_unresolved'
-        if self.db.execute("SELECT 1 FROM generation_turns WHERE status IN ('generating','received','uncertain')").fetchone():
+        if self.db.execute("SELECT 1 FROM active_generation_turns WHERE status IN ('generating','received','uncertain')").fetchone():
             return 'generation_unresolved'
         from .agency import AgencyStore
         if AgencyStore(self.state, self.group).has_unresolved_work():
@@ -155,6 +160,9 @@ class DailyScheduler:
         return None
 
     def tick(self, now: int | None = None) -> bool:
+        from .encounters import Encounters
+        if self.settings.room_mode == 'shared' or Encounters(self.state, self.settings).controls_schedule():
+            return False
         now = int(time.time()) if now is None else now
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
@@ -168,6 +176,8 @@ class DailyScheduler:
             wall = time.strftime('%Y-%m-%dT%H', local) + (f':{local.tm_min:02d}' if local.tm_min else '')
             slot = hashlib.sha256(f'daily:{self.group}:{wall}'.encode()).hexdigest()
             activity = self.plan(config)[local.tm_hour * 60 + local.tm_min]
+            if self.settings.participant_scheduling:
+                activity = 'check_in'
             reason = 'missed_window' if now > due + WINDOW else self.gate(now, activity)
             self.db.execute('UPDATE daily_schedule SET next_due_at=? WHERE group_id=?',
                 (self.next_due(config, now), self.group))
@@ -214,6 +224,8 @@ class DailyScheduler:
         row = self.row()
         config = json.loads(row['config_json']) if row else self.defaults()
         config.setdefault('tick_minutes', 60)
+        if self.settings.participant_scheduling:
+            config['weights'] = {'check_in': 100, 'exploration': 0}
         config['check_in_limit'] = self.state.initiative_limit(self.settings.initiative_max_checks_24h)
         now = int(time.time())
         today = time.strftime('%Y-%m-%d', time.localtime(now))
@@ -225,7 +237,11 @@ class DailyScheduler:
         plan = self.plan(config)
         actual = {int(s['wall_slot'][11:13]) * 60 + (int(s['wall_slot'][14:16]) if len(s['wall_slot']) > 13 else 0): s
                   for s in recent if s['wall_slot'].startswith(today)}
+        from .encounters import Encounters
+        encounter = Encounters(self.state, self.settings)
         return {'configured': row is not None, 'revision': row['revision'] if row else None,
+            'participant_scheduling': self.settings.participant_scheduling,
+            'room_mode': self.settings.room_mode, 'encounters': encounter.snapshot(),
             'config': config, 'date': today, 'timezone': time.tzname,
             'server_time': now, 'next_due_at': row['next_due_at'] if row else None,
             'next_due_local': time.strftime('%Y-%m-%d %H:%M', time.localtime(row['next_due_at'])) if row and row['next_due_at'] else None,

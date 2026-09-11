@@ -35,6 +35,7 @@ def _parser() -> argparse.ArgumentParser:
         description="Approval-gated Kindroid group chat relay for Codex",
     )
     parser.add_argument("--env-file", default="kindroid.env")
+    parser.add_argument('--room', help='Room key from RELAY_ROOMS_FILE (defaults to the primary room)')
     sub = parser.add_subparsers(dest="command", required=True)
 
     bootstrap = sub.add_parser("bootstrap", help="Record existing history without replaying it")
@@ -138,6 +139,15 @@ def main(argv: list[str] | None = None) -> int:
         return _print_integrity(args.database)
     try:
         settings = Settings.load(args.env_file)
+        if args.room or (settings.rooms_file and args.command not in {'serve', 'run'}):
+            from .rooms import configured_rooms
+            rooms = configured_rooms(settings)
+            selected = [room for room in rooms if room.room_key == args.room] if args.room else rooms[:1]
+            if not selected:
+                raise ConfigurationError('Unknown configured room key')
+            if args.command in {'serve', 'run'}:
+                raise ConfigurationError('Start the complete host without --room; select rooms for individual operations')
+            settings = selected[0]
     except ConfigurationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
@@ -163,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     _configure_logging(settings)
 
+    if args.command == 'run' and (settings.rooms_file or settings.participant_scheduling):
+        from .server import run_room_host
+        return run_room_host(settings)
+
     if args.command == "serve":
         try:
             return serve_dashboard(settings)
@@ -174,9 +188,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
-    lock_path = settings.state_path.with_suffix(".lock")
+    lock_path = (settings.account_state_path or settings.state_path).with_suffix(".lock")
     try:
-        with RelayState(settings.state_path) as state:
+        with RelayState(settings.state_path, account_path=settings.account_state_path) as state:
             if args.command == "status":
                 _print_status(state)
                 return 0

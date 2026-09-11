@@ -58,6 +58,8 @@ class CuriosityScheduler:
 
     @property
     def enabled(self) -> bool:
+        if self.settings.participant_scheduling or self.settings.room_mode == 'shared':
+            return False
         return self.settings.curiosity_enabled and self.settings.exploration_enabled
 
     def basis(self) -> str:
@@ -109,7 +111,7 @@ class CuriosityScheduler:
             return 'pending_message'
         if self.db.execute("SELECT 1 FROM outbox WHERE status IN ('pending','sending','uncertain') LIMIT 1").fetchone():
             return 'delivery_unresolved'
-        if self.db.execute("SELECT 1 FROM generation_turns WHERE status IN ('generating','received','uncertain') LIMIT 1").fetchone():
+        if self.db.execute("SELECT 1 FROM active_generation_turns WHERE status IN ('generating','received','uncertain') LIMIT 1").fetchone():
             return 'generation_unresolved'
         from .agency import AgencyStore
         if AgencyStore(self.state, self.group).has_unresolved_work(command_id):

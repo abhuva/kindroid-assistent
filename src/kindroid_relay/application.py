@@ -52,7 +52,12 @@ class RelayApplication:
         from .discovery import DiscoveryStore
         self.experiences = Experiences(self)
         self.discovery = DiscoveryStore(state, settings.group_id)
-        self.relay.context_operation = lambda: self.exploration.advance(synchronized=True) or self.experiences.advance()
+        self.relay.context_operation = self._advance_context
+
+    def _advance_context(self) -> bool:
+        from .encounters import Encounters
+        return (self.exploration.advance(synchronized=True) or self.experiences.advance()
+                or Encounters(self.state, self.settings).finish_exploration(self))
 
     def bootstrap(
         self,
@@ -66,6 +71,9 @@ class RelayApplication:
         )
 
     def run_once(self) -> int:
+        if self.settings.room_mode == 'shared':
+            from .shared import SharedConversation
+            return int(SharedConversation(self).step())
         return self.relay.run_once()
 
     def sync_history(self, command_id: str) -> dict[str, Any]:
@@ -73,7 +81,7 @@ class RelayApplication:
         from .kindroid_api import KindroidAPIError
         from .relay import HistoryCooldownError
         from .state import HistoryBudgetError
-        from .turns import ReconciliationError, ReconciliationPending
+        from .turns import ReconciliationError, ReconciliationPending, reconciliation_diagnostic
 
         requests_before = self.state.history_request_count()
         def count_messages() -> int:
@@ -94,10 +102,12 @@ class RelayApplication:
             result['retry_at'] = exc.retry_at
         except HistoryBudgetError:
             outcome = 'history_budget'
-        except ReconciliationPending:
+        except ReconciliationPending as exc:
             outcome = 'history_pending'
-        except ReconciliationError:
+            result.update(reconciliation_diagnostic(exc))
+        except ReconciliationError as exc:
             outcome = 'reconciliation_unresolved'
+            result.update(reconciliation_diagnostic(exc))
         except KindroidAPIError:
             outcome = 'history_error'
         summaries = {
@@ -114,11 +124,14 @@ class RelayApplication:
                       synced_at=self.state.get_int('context_synced_at', 0), paused=self.state.is_paused())
         self.state.activity.add('history_sync',
             ActivitySeverity.INFO if outcome in {'synced', 'bootstrapped'} else ActivitySeverity.WARNING,
-            summaries[outcome], details={'command_id': command_id, 'outcome': outcome,
+            summaries[outcome] + ('; ' + result['reason_detail'] if 'reason_detail' in result else ''),
+            details={'command_id': command_id, 'outcome': outcome,
                                         'request_count': result['history_requests']}, correlation_id=command_id)
         return result
 
     def trigger_initiative(self) -> dict[str, Any]:
+        if self.settings.room_mode == 'shared':
+            return {'handled': 0, 'initiative_outcome': 'shared_room', 'check_in_sent': False}
         handled = self.relay.trigger_initiative_now()
         outcome = self.relay.initiative_outcome or "unknown"
         return {
@@ -131,9 +144,15 @@ class RelayApplication:
         }
 
     def start_conversation(self) -> int:
+        if self.settings.room_mode == 'shared':
+            import uuid
+            from .shared import SharedConversation
+            return int(SharedConversation(self).start(uuid.uuid4().hex)['outcome'] == 'started')
         return self.relay.start_conversation_now()
 
     def start_scheduled_exploration(self, command_id: str) -> dict[str, Any]:
+        if self.settings.participant_scheduling:
+            return self.start_scheduled_check_in(command_id)
         from .curiosity import CuriosityScheduler
         scheduler = CuriosityScheduler(self.state, self.settings)
         reason = scheduler.guard(command_id)
@@ -179,6 +198,8 @@ class RelayApplication:
         return result
 
     def start_exploration(self, command_id: str, *, scheduled: bool = False) -> dict[str, Any]:
+        if self.settings.room_mode == 'shared':
+            raise ValueError('Shared rooms use companion sessions; exploration invitations belong to private encounters')
         from .agency import AgencyStore, invitation, select_stimuli
         if not self.settings.exploration_enabled:
             raise ValueError('Exploration is disabled pending operator acceptance')

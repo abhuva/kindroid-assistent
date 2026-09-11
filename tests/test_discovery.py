@@ -248,7 +248,7 @@ def test_migration_preserves_existing_state_and_backup_privacy(tmp_path, monkeyp
     path = tmp_path / 'old.db'
     db = open_database(path); apply_migrations(db, MIGRATIONS[:10])
     db.execute("INSERT INTO metadata VALUES ('fixture','retained')"); db.commit(); db.close()
-    assert migrate_database(path) == [11]
+    assert migrate_database(path) == [11, 12, 13]
     with RelayState(path) as state:
         assert state.get_meta('fixture') == 'retained'
         assert not state.connection.execute('SELECT 1 FROM exploration_experiences').fetchone()

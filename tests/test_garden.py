@@ -74,7 +74,7 @@ def test_upgrade_preserves_old_candidate_status_and_original_trail(tmp_path, mon
     with db:
         db.execute("UPDATE passing_candidates SET status='archived' WHERE id=?", (candidate,))
     db.close()
-    assert migrate_database(path) == [8, 9, 10, 11]
+    assert migrate_database(path) == [8, 9, 10, 11, 12, 13]
     assert migrate_database(path) == []
     with RelayState(path) as state:
         store = GardenStore(state.connection, 'g1')

@@ -211,7 +211,7 @@ def test_migration_from_five_preserves_memory(tmp_path):
     apply_migrations(db, MIGRATIONS[:5])
     db.execute("INSERT INTO memory_statements(id,group_id,kind,interpretation,origin,version,status,temporal_scope,created_at) VALUES ('kept','g1','observation','','system_selection','v1','disputed','',1)")
     db.commit(); db.close()
-    assert migrate_database(path) == [6, 7, 8, 9, 10, 11]
+    assert migrate_database(path) == [6, 7, 8, 9, 10, 11, 12, 13]
     with RelayState(path) as state:
         assert state.connection.execute("SELECT status FROM memory_statements WHERE id='kept'").fetchone()[0] == 'disputed'
         assert state.connection.execute('PRAGMA foreign_key_check').fetchall() == []

@@ -240,7 +240,7 @@ def test_migration_five_preserves_existing_observations(tmp_path):
         db.execute("INSERT INTO memory_entities VALUES ('e','g1','person','Alex','[]')")
         db.execute("INSERT INTO memory_links VALUES ('s','e','g1','mentions','marc_selection')")
     db.close()
-    assert migrate_database(path) == [5, 6, 7, 8, 9, 10, 11]
+    assert migrate_database(path) == [5, 6, 7, 8, 9, 10, 11, 12, 13]
     with RelayState(path) as state:
         item = MemoryStore(state.connection, 'g1').detail('s')
         assert item['interpretation'] == 'retained' and item['status'] == 'disputed'

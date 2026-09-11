@@ -33,6 +33,8 @@ async function dashboard(t) {
       active_command: null, schedule: { initiative_enabled: true, initiative_interval_seconds: 600, history_request_limit_24h: 100, max_consecutive_turns: 8,
         initiative_budget: { used: 5, limit: 50, available_at: null, source: "configuration" } } },
     commands: [], events: [], deliveries: [], calls: [], offline: false, losePost: false,
+    encounters: { enabled: true, mode: "assistant", choice: null, controls_schedule: false, session: null,
+      shared_config: { enabled: true, daily_time: "18:00" } },
     daily: { configured: false, revision: null, date: "2026-09-07", timezone: ["Fixture time"], next_due_at: null,
       config: { enabled: true, weights: { check_in: 40, exploration: 60 }, dead_hours: [],
         check_in_limit: 50, exploration_limit: 3, attempt_limit: 2, interpretation_limit: 4 },
@@ -66,6 +68,7 @@ async function dashboard(t) {
             : url.endsWith("settings/discovery") ? "set_discovery"
             : url.endsWith("discovery/public-topic") ? "approve_public_topic"
             : url.endsWith("sync-history") ? "sync_history"
+            : url.endsWith("recover-shared") ? "recover_shared"
             : url.endsWith("trigger-initiative") ? "trigger_initiative" : "start_conversation",
           approval_id: url.includes("approvals") ? "a1" : null, status: "queued", requested_at: stamp, error: null };
         fixture.commands.unshift(command);
@@ -74,6 +77,7 @@ async function dashboard(t) {
       return response(command, 202);
     }
     if (url === "/api/v1/snapshot") return response(fixture.snapshot);
+    if (url === "/api/v1/encounters") return response(fixture.encounters);
     if (url === "/api/v1/schedule") return response(fixture.daily);
     if (url === "/api/v1/exploration") return response(fixture.exploration);
     if (url === "/api/v1/discovery") return response(fixture.discovery);
@@ -102,13 +106,39 @@ async function dashboard(t) {
     if (url.includes("log-tail")) return response({ lines: ["<b>safe text</b>"], truncated: true }, options.headers?.["If-None-Match"] ? 304 : 200);
     throw new Error(`Unexpected fixture request ${url}`);
   };
-  for (const name of ["api-client.js", "ui-model.js", "app.js", "memory.js", "exploration.js", "garden.js", "schedule.js", "discovery.js"]) {
+  for (const name of ["api-client.js", "ui-model.js", "app.js", "memory.js", "exploration.js", "garden.js", "schedule.js", "discovery.js", "encounters.js"]) {
     w.eval(fs.readFileSync(path.join(assets, name), "utf8") + (name === "app.js" ? "\nwindow.testApp = { refreshAll, schedulePoll };" : ""));
   }
   const flush = async () => { for (let i = 0; i < 5; i++) await tick(); };
   await flush();
   return { w, fixture, timers, flush, el: (id) => w.document.getElementById(id), refresh: () => w.testApp.refreshAll() };
 }
+
+test("encounter cancellation preserves its request key after a lost response", async (t) => {
+  const { el, flush, fixture } = await dashboard(t);
+  assert.equal(el("encounter-controls").hidden, false);
+  fixture.losePost = true;
+  el("encounter-cancel").click(); await flush();
+  assert.equal(fixture.commands.length, 1);
+  assert.equal(el("encounter-retry").hidden, false);
+  el("encounter-retry").click(); await flush();
+  assert.equal(fixture.commands.length, 1);
+  const calls = fixture.calls.filter(c => c.url.endsWith("settings/encounter"));
+  assert.equal(calls.length, 2);
+  assert.equal(JSON.parse(calls[0].options.body).idempotency_key, JSON.parse(calls[1].options.body).idempotency_key);
+  assert.match(el("encounter-result").textContent, /queued/);
+});
+
+test("room API requests retain the selected room namespace", async (t) => {
+  const { w } = await dashboard(t);
+  w.history.replaceState({}, "", "/rooms/miko/");
+  const calls = [];
+  const client = new w.RelayApiClient({ csrf: "token", fetchImpl: async url => {
+    calls.push(url); return { ok: true, status: 200, headers: new Map(), json: async () => ({}) };
+  } });
+  await client.request("/api/v1/messages");
+  assert.deepEqual(calls, ["/rooms/miko/api/v1/messages"]);
+});
 
 test("schedule reallocates overnight and multiple dead blocks and preserves draft on refresh", async (t) => {
   const { w, el, flush, fixture } = await dashboard(t);
@@ -470,7 +500,7 @@ test("check-in completion shows skipped reason or sent outcome beside its contro
   assert.match(el("trigger-initiative-status").className, /warning/);
   fixture.commands[0].result = { handled: 0, initiative_outcome: "check_in_sent_user_turn", check_in_sent: true };
   await refresh();
-  assert.match(el("trigger-initiative-status").textContent, /Check-in sent; Hannah did not take/);
+  assert.match(el("trigger-initiative-status").textContent, /Check-in sent; companion did not take/);
   assert.match(el("trigger-initiative-status").className, /success/);
 });
 
@@ -507,10 +537,15 @@ test("history sync blockers remain visible after command recovery without claimi
   for (const [outcome, expected] of [["history_cooldown", /API cooldown/], ["history_budget", /allowance exhausted/],
     ["history_pending", /incomplete/], ["reconciliation_unresolved", /ambiguous/], ["history_error", /request failed/]]) {
     fixture.commands = [{ id: outcome, command_type: "sync_history", status: "completed", requested_at: stamp,
-      result: { sync_outcome: outcome, paused: true, retry_at: 1800000000 } }];
+      result: { sync_outcome: outcome, paused: true, retry_at: 1800000000,
+        reason_detail: "Fixed diagnostic reason <b>literal</b>" } }];
     await refresh(); await flush();
     assert.match(el("history-sync-status").textContent, expected);
     assert.match(el("history-sync-status").className, /warning/);
+    assert.match(el("command-status").textContent, /blocked/);
+    assert.doesNotMatch(el("command-status").textContent, /completed/);
+    assert.match(el("history-sync-status").textContent, /Fixed diagnostic reason <b>literal<\/b>/);
+    assert.equal(el("history-sync-status").querySelector("b"), null);
   }
   fixture.snapshot.worker.stale = true;
   await refresh();
@@ -898,6 +933,73 @@ test("discovery keeps unsafe sources inert and public-topic approvals explicit",
   assert.deepEqual(JSON.parse(post.options.body).payload, { session_id: "session1", topic: "Tide pools" });
 });
 
+test("encounter rejection leaves controls available for a corrected request", async (t) => {
+  const { fixture, el, flush } = await dashboard(t);
+  fixture.postError = "Invalid encounter";
+  el("encounter-cancel").click(); await flush();
+  assert.equal(el("encounter-cancel").disabled, false);
+  assert.equal(el("encounter-retry").hidden, true);
+  assert.match(el("encounter-result").textContent, /rejected/);
+  fixture.postError = null;
+  el("encounter-cancel").click(); await flush();
+  assert.equal(fixture.commands.length, 1);
+});
+
+test("shared recovery requires explicit confirmation, retries one request and stays paused", async (t) => {
+  const { w, fixture, el, flush, refresh } = await dashboard(t);
+  fixture.snapshot.relay.paused = true;
+  fixture.encounters.mode = "shared";
+  fixture.encounters.session = { id: "session", status: "active", message_count: 2 };
+  fixture.encounters.recovery = { eligible: true, session_id: "session", turn_id: "turn", reason: "An interrupted relay generation." };
+  await refresh(); await flush();
+  assert.equal(el("session-recovery").hidden, false);
+  assert.equal(el("session-recover").disabled, false);
+  let confirmations = 0;
+  w.confirm = text => { confirmations++; assert.match(text, /does not reset the Kindroid group/); return false; };
+  el("session-recover").click(); await flush();
+  assert.equal(fixture.calls.filter(c => c.options.method === "POST").length, 0);
+  w.confirm = () => { confirmations++; return true; };
+  fixture.losePost = true;
+  el("session-recover").click(); el("session-recover").click(); await flush();
+  assert.equal(confirmations, 2);
+  assert.equal(fixture.commands.length, 1);
+  assert.equal(el("encounter-retry").hidden, false);
+  el("encounter-retry").click(); await flush();
+  const posts = fixture.calls.filter(c => c.options.method === "POST");
+  assert.equal(posts.length, 2);
+  assert.ok(posts.every(c => c.url.endsWith("recover-shared")));
+  const first = JSON.parse(posts[0].options.body), second = JSON.parse(posts[1].options.body);
+  assert.equal(first.idempotency_key, second.idempotency_key);
+  assert.deepEqual(first.payload, { session_id: "session", turn_id: "turn", confirm: true });
+  fixture.commands[0].status = "completed";
+  fixture.commands[0].result = { outcome: "recovered", paused: true };
+  fixture.encounters.recovery.eligible = false;
+  fixture.encounters.recovery.reason = "This session was already recovered.";
+  await refresh(); await flush();
+  assert.match(el("encounter-result").textContent, /Resume, then Start conversation/);
+  assert.equal(el("session-recover").disabled, true);
+  assert.equal(fixture.snapshot.relay.paused, true);
+  assert.equal(fixture.calls.filter(c => c.options.method === "POST").length, 2);
+});
+
+test("shared recovery eligibility and blocked outcome cannot look like success", async (t) => {
+  const { w, fixture, el, flush, refresh } = await dashboard(t);
+  assert.equal(el("session-recovery").hidden, true);
+  fixture.snapshot.relay.paused = true;
+  fixture.encounters.mode = "shared";
+  fixture.encounters.recovery = { eligible: false, reason: "Inspect uncertain outgoing delivery." };
+  await refresh(); await flush();
+  assert.equal(el("session-recover").disabled, true);
+  assert.match(el("session-recovery-note").textContent, /uncertain outgoing/);
+  fixture.commands = [{ id: "blocked-recovery", command_type: "recover_shared", status: "completed", requested_at: stamp,
+    result: { outcome: "recovery_blocked", reason: "History allowance exhausted." } }];
+  await refresh(); await flush();
+  assert.match(el("command-status").textContent, /blocked/);
+  assert.match(el("command-status").className, /warning/);
+  assert.match(el("encounter-result").textContent, /Recovery blocked/);
+  assert.equal(fixture.calls.filter(c => c.options.method === "POST").length, 0);
+});
+
 test("axe scans dashboard and each confirmation, memory, exploration and garden dialog", async (t) => {
   const { w, el, flush, fixture } = await dashboard(t);
   w.setTimeout = setTimeout;
@@ -918,6 +1020,12 @@ test("axe scans dashboard and each confirmation, memory, exploration and garden 
     assert.equal(result.violations.length, 0, JSON.stringify(result.violations.map((item) => ({ id: item.id, nodes: item.nodes.map((node) => node.target) }))));
   };
   fixture.exploration.enabled = true;
+  await scan();
+  fixture.encounters.mode = "shared";
+  fixture.encounters.recovery = { eligible: true, session_id: "session", turn_id: "turn", reason: "End the interrupted relay session without changing the Kindroid group." };
+  fixture.snapshot.relay.paused = true;
+  await w.testApp.refreshAll(); await flush();
+  assert.equal(el("session-recovery").hidden, false);
   await scan();
   el("tab-schedule").click();
   w.document.querySelector('[data-tick-minutes="15"]').click();

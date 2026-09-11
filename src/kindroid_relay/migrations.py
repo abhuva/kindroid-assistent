@@ -430,6 +430,54 @@ def _migration_11(connection: sqlite3.Connection) -> None:
     connection.execute('CREATE INDEX experience_work ON exploration_experiences(group_id,status,created_at)')
 
 
+def _migration_12(connection: sqlite3.Connection) -> None:
+    # Rebuild only the generation table to permit an AI predecessor without an
+    # invented Codex outbox. All existing keys, values and links are preserved.
+    connection.execute('ALTER TABLE generation_turns RENAME TO generation_turns_old')
+    connection.execute('''CREATE TABLE generation_turns (
+        id TEXT PRIMARY KEY, group_id TEXT NOT NULL, ai_id TEXT NOT NULL,
+        display_name TEXT NOT NULL, outbox_id TEXT UNIQUE REFERENCES outbox(id),
+        anchor_message_id TEXT NOT NULL REFERENCES messages(remote_id),
+        status TEXT NOT NULL CHECK(status IN ('generating','received','uncertain','reconciled')),
+        after_timestamp INTEGER NOT NULL, created_at INTEGER NOT NULL)''')
+    connection.execute('INSERT INTO generation_turns SELECT * FROM generation_turns_old')
+    connection.execute('DROP TABLE generation_turns_old')
+    connection.execute('''CREATE TABLE encounter_choices (
+        id TEXT PRIMARY KEY, source_message_id TEXT UNIQUE REFERENCES messages(remote_id),
+        kind TEXT NOT NULL, due_at INTEGER, created_at INTEGER NOT NULL,
+        status TEXT NOT NULL, command_id TEXT, actor TEXT NOT NULL)''')
+    connection.execute('''CREATE TABLE encounter_explorations (
+        source_message_id TEXT PRIMARY KEY REFERENCES messages(remote_id),
+        command_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL)''')
+    connection.execute('''CREATE TABLE shared_sessions (
+        id TEXT PRIMARY KEY, status TEXT NOT NULL, started_at INTEGER NOT NULL,
+        ended_at INTEGER, reason TEXT, next_speaker INTEGER NOT NULL DEFAULT 0,
+        message_count INTEGER NOT NULL DEFAULT 0, checked_count INTEGER NOT NULL DEFAULT 0,
+        next_turn_at INTEGER NOT NULL, anchor_id TEXT REFERENCES messages(remote_id),
+        pending_turn_id TEXT REFERENCES generation_turns(id), attention_id TEXT,
+        assistance_active INTEGER NOT NULL DEFAULT 0)''')
+    connection.execute("CREATE UNIQUE INDEX shared_one_active ON shared_sessions(status) WHERE status='active'")
+    connection.execute('''CREATE TABLE shared_attention (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES shared_sessions(id),
+        source_message_id TEXT NOT NULL REFERENCES messages(remote_id),
+        status TEXT NOT NULL, decision_json TEXT, outbox_id TEXT REFERENCES outbox(id))''')
+
+
+def _migration_13(connection: sqlite3.Connection) -> None:
+    # The original generation remains uncertain: this is an operator decision
+    # to abandon its continuation, not a fabricated reply association.
+    connection.execute('''CREATE TABLE shared_recoveries (
+        command_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL UNIQUE REFERENCES shared_sessions(id),
+        generation_id TEXT NOT NULL UNIQUE REFERENCES generation_turns(id),
+        anchor_id TEXT NOT NULL REFERENCES messages(remote_id),
+        created_at INTEGER NOT NULL, history_count INTEGER NOT NULL,
+        actor TEXT NOT NULL CHECK(actor='operator'))''')
+    connection.execute('''CREATE VIEW active_generation_turns AS
+        SELECT t.rowid AS generation_order,t.* FROM generation_turns t WHERE NOT EXISTS (
+            SELECT 1 FROM shared_recoveries r WHERE r.generation_id=t.id)''')
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -442,6 +490,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     (9, _migration_9),
     (10, _migration_10),
     (11, _migration_11),
+    (12, _migration_12),
+    (13, _migration_13),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]
 

@@ -5,6 +5,8 @@ import socket
 import threading
 import time
 import webbrowser
+from contextlib import ExitStack
+import secrets
 
 import uvicorn
 
@@ -18,6 +20,23 @@ from .worker import RelayWorker
 
 
 logger = logging.getLogger(__name__)
+
+
+def run_room_host(settings: Settings) -> int:
+    from .rooms import configured_rooms
+    from .room_worker import RoomWorker
+    rooms = configured_rooms(settings)
+    with ExitStack() as stack:
+        for room in rooms:
+            room.ensure_runtime_directories()
+            stack.enter_context(ProcessLock(room.state_path.with_suffix('.lock')))
+            migrate_database(room.state_path)
+        worker = RoomWorker(rooms)
+        try:
+            worker.run()
+        finally:
+            worker.stop()
+    return 0
 
 
 def ensure_port_available(host: str, port: int) -> None:
@@ -65,19 +84,26 @@ def _wait_for_worker_started(
 
 
 def serve_dashboard(settings: Settings) -> int:
+    from .rooms import configured_rooms
+    from .room_worker import RoomWorker
+    rooms = configured_rooms(settings)
     settings.ensure_runtime_directories()
     ensure_port_available(settings.web_host, settings.web_port)
     lock_path = settings.state_path.with_suffix(".lock")
     url = f"http://{settings.web_host}:{settings.web_port}"
 
-    with ProcessLock(lock_path):
-        migrate_database(settings.state_path)
+    with ExitStack() as stack:
+        # Lock every room so legacy CLI operations cannot start another worker.
+        for room in rooms:
+            room.ensure_runtime_directories()
+            stack.enter_context(ProcessLock(room.state_path.with_suffix('.lock')))
+            migrate_database(room.state_path)
         state_factory = RelayStateFactory(settings.state_path)
         wake_event = threading.Event()
         stop_event = threading.Event()
         worker_failed = threading.Event()
-        worker = RelayWorker(
-            settings,
+        worker = (RoomWorker if settings.rooms_file else RelayWorker)(
+            rooms if settings.rooms_file else settings,
             wake_event=wake_event,
             stop_event=stop_event,
         )
@@ -112,7 +138,15 @@ def serve_dashboard(settings: Settings) -> int:
             name="kindroid-relay-worker",
             daemon=False,
         )
-        app = create_web_app(settings, state_factory, wake_event)
+        token = secrets.token_urlsafe(32)
+        links = [(room.room_label or room.room_key, '/rooms/' + room.room_key + '/') for room in rooms]
+        app = (create_web_app(rooms[0], state_factory, wake_event, csrf_token=token, room_links=links)
+               if settings.rooms_file else create_web_app(settings, state_factory, wake_event))
+        if settings.rooms_file:
+            for room in rooms:
+                app.mount('/rooms/' + room.room_key, create_web_app(room,
+                    RelayStateFactory(room.state_path, room.account_state_path), wake_event,
+                    csrf_token=token, room_links=links))
         server = uvicorn.Server(
             uvicorn.Config(
                 app,

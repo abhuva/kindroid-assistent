@@ -209,7 +209,7 @@ function renderCommand(command, { announceTerminal = false } = {}) {
     target.textContent = view.detail || command.status;
     target.className = `control-status ${view.tone}`;
   }
-  if (command.command_type === "sync_history" && view.terminal
+  if (["sync_history", "recover_shared"].includes(command.command_type) && view.terminal
       && (!previous || !RelayUiModel.commandStatusView(previous).terminal)) {
     refreshMessages().catch(error => {
       if (error.name !== "AbortError") announce(`History sync finished, but loading saved messages failed: ${error.message}`);
@@ -400,7 +400,7 @@ async function refreshMessages(older = false) {
       article.className = `message ${message.participant || "unknown"} ${message.identity_fallback ? "fallback" : ""}`;
       const header = document.createElement("header");
       const name = document.createElement("strong");
-      name.textContent = `${isCodex ? "Codex" : message.participant === "hannah" ? "Hannah" : message.participant === "marc" ? "Marc" : "Unknown participant"} · ${message.history_confirmed === false ? "expected name" : "stored name"}: ${message.display_name || "Unknown"}`;
+      name.textContent = `${isCodex ? "Codex" : message.participant === "hannah" ? "Hannah" : message.participant === "companion" ? message.display_name : message.participant === "marc" ? "Marc" : "Unknown participant"} · ${message.history_confirmed === false ? "expected name" : "stored name"}: ${message.display_name || "Unknown"}`;
       const time = document.createElement("time");
       const epoch = message.timestamp > 10000000000 ? message.timestamp : message.timestamp * 1000;
       time.textContent = new Date(epoch).toLocaleString();

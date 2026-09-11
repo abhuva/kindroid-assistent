@@ -175,6 +175,32 @@ class RelayWorker:
         return WorkerPhase.POLLING
 
     def _dispatch(self, application: RelayApplication, command: CommandRecord) -> dict[str, Any]:
+        from .encounters import Encounters
+        from .shared import SharedConversation
+        if command.command_type == CommandType.RECOVER_SHARED:
+            from .shared_recovery import recover_shared
+            return recover_shared(application, command.id, command.payload)
+        if command.command_type == CommandType.SET_SHARED_SCHEDULE:
+            return SharedConversation(application).configure(command.payload)
+        if command.command_type == CommandType.SET_ENCOUNTER:
+            if not application.settings.participant_scheduling:
+                raise ValueError('Participant scheduling is not enabled for this room')
+            return Encounters(application.state, application.settings).override(command.payload['due_at'])
+        if command.command_type == CommandType.CHOSEN_ENCOUNTER:
+            return Encounters(application.state, application.settings).run(application, command.id)
+        if command.command_type == CommandType.END_SESSION:
+            return SharedConversation(application).end()
+        if command.command_type == CommandType.START_SHARED:
+            shared = SharedConversation(application)
+            raw = application.state.get_meta('shared_config')
+            import json
+            due = command.payload['scheduled_at']
+            local = time.localtime(due)
+            if (not due <= time.time() <= due + 180
+                    or (raw and not json.loads(raw)['enabled'])
+                    or (local.tm_hour, local.tm_min) != (shared.settings.shared_hour, shared.settings.shared_minute)):
+                return {'outcome': 'missed_or_changed'}
+            return shared.start(command.id)
         if command.command_type == CommandType.SYNC_HISTORY:
             return application.sync_history(command.id)
         if command.command_type == CommandType.SET_DISCOVERY:
@@ -204,6 +230,8 @@ class RelayWorker:
         if command.command_type.value.startswith("memory_"):
             return application.memory.command(command.command_type.value.removeprefix("memory_"), command.payload, command.id)
         if command.command_type == CommandType.START_CONVERSATION:
+            if self.settings.room_mode == 'shared':
+                return SharedConversation(application).start(command.id)
             return {"handled": application.start_conversation()}
         if command.command_type == CommandType.TRIGGER_INITIATIVE:
             return application.trigger_initiative()
@@ -252,7 +280,9 @@ class RelayWorker:
         try:
             result = self._dispatch(application, command)
         except Exception as exc:
-            memory_failure = (command.command_type.value.startswith("memory_")
+            memory_failure = (command.command_type in {CommandType.RECOVER_SHARED, CommandType.SET_ENCOUNTER, CommandType.CHOSEN_ENCOUNTER,
+                                                      CommandType.START_SHARED, CommandType.END_SESSION, CommandType.SET_SHARED_SCHEDULE}
+                              or command.command_type.value.startswith("memory_")
                               or command.command_type in {CommandType.SYNC_HISTORY, CommandType.SET_SCHEDULE, CommandType.SCHEDULED_CHECK_IN,
                                                          CommandType.SET_DISCOVERY, CommandType.APPROVE_PUBLIC_TOPIC}
                               or command.command_type in {CommandType.START_EXPLORATION, CommandType.SCHEDULED_EXPLORATION, CommandType.REVIEW_CANDIDATE, CommandType.CLOSE_EXPLORATION, CommandType.INTERPRET_EXPLORATION, CommandType.GARDEN_CORRECT})
@@ -285,10 +315,16 @@ class RelayWorker:
             CommandStatus.COMPLETED,
             result=result,
         )
+        sync_blocked = (command.command_type == CommandType.SYNC_HISTORY
+                        and result.get('sync_outcome') not in {'synced', 'bootstrapped'})
+        recovery_blocked = (command.command_type == CommandType.RECOVER_SHARED
+                            and result.get('outcome') not in {'recovered', 'already_recovered'})
         state.activity.add(
             "command_completed",
-            ActivitySeverity.INFO,
-            f"Command {command.command_type.value} completed"
+            ActivitySeverity.WARNING if sync_blocked or recovery_blocked else ActivitySeverity.INFO,
+            ('Shared session recovery blocked; inspect the command outcome' if recovery_blocked else
+             'History sync blocked; saved conversation was not fully synchronized' if sync_blocked else
+             f"Command {command.command_type.value} completed")
             + (f": {result['initiative_outcome']}" if command.command_type == CommandType.TRIGGER_INITIATIVE else ""),
             details={
                 "command_id": command.id,
@@ -334,7 +370,8 @@ class RelayWorker:
                                 next_poll_at = min(next_poll_at, time.time())
                             continue
 
-                        if daily.tick() or curiosity.tick():
+                        from .encounters import Encounters
+                        if Encounters(state, self.settings).tick() or daily.tick() or curiosity.tick():
                             continue  # the next loop claims its durable command normally
                         now = time.time()
                         memory_deadline = now + self.settings.memory_extraction_timeout_seconds

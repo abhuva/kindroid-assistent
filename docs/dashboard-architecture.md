@@ -16,6 +16,13 @@ dashboard release.
 
 ## Process topology
 
+**2026-09-10 extension:** With `RELAY_ROOMS_FILE`, one worker rotates between
+isolated room databases and dashboard sub-applications. The primary store also
+owns account history quota/cooldown. New local commands configure the next
+encounter, run a chosen encounter, configure/start/end shared sessions. The same
+HTTP security and serialized external-effect boundaries apply to every room.
+See [ADR-020](adr/ADR-020-room-sessions-and-chosen-encounters.md).
+
 ```text
 Browser on this machine
         |
@@ -230,10 +237,29 @@ consistent error object and never return tracebacks to the browser.
 
 **2026-09-08 message controls:** Messages distinguishes **Reload saved messages**
 (local GET only) from **Sync Kindroid history** (protected durable command).
-Completion or a blocker is shown inline and reloads the local message list. Unknown
+  Completion or a blocker is shown inline and reloads the local message list. Unknown
 submission outcomes use the shared same-request retry control. Read-only sync does
 not force a follow-up poll; independent scheduled/normal worker activity remains
 enabled unless the operator pauses it. See [operator behavior](../README.md).
+
+**2026-09-11 sync diagnostics:** Durable command `completed` still means the
+operation finished; `sync_outcome` determines whether it synchronized. A blocked
+outcome is displayed as **blocked** rather than **completed**, and its completion
+activity is a warning. Reconciliation results include allow-listed `reason_code`
+and `reason_detail` fields. The same fixed explanation appears in reconciliation
+pause/activity messages. No message bodies, speaker identifiers, raw exception
+text or unknown reason codes are used as diagnostics. These changes do not loosen
+matching, import unconfirmed effects, or bypass budgets.
+
+**2026-09-11 explicit shared recovery:** `POST /api/v1/commands/recover-shared`
+accepts an idempotency key and payload `{session_id, turn_id, confirm: true}`.
+It uses the existing loopback/Host/same-origin/CSRF protections and only enqueues
+worker work. Eligibility appears in `/api/v1/encounters`; a native confirmation
+explains the local session scope and history cost. Interrupted commands are not
+automatically replayed. The worker separately enforces pause, exact target,
+uncaptured generation and no other unresolved effects, then imports a complete
+history window and commits an audit-preserving recovery. The room stays paused.
+See [ADR-022](adr/ADR-022-operator-shared-session-recovery.md).
 
 The first dashboard is a single responsive page with:
 

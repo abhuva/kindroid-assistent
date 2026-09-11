@@ -5,6 +5,7 @@ import hashlib
 import secrets
 import sqlite3
 import time
+import html as html_module
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,7 @@ def create_web_app(
     *,
     csrf_token: str | None = None,
     testing: bool = False,
+    room_links: list[tuple[str, str]] | None = None,
 ) -> FastAPI:
     token = csrf_token or secrets.token_urlsafe(32)
     expected_origin = f"http://{settings.web_host}:{settings.web_port}"
@@ -222,11 +224,16 @@ def create_web_app(
         return _error(500, "internal_error", "The dashboard request failed.")
 
     @app.get("/", response_class=HTMLResponse)
-    def dashboard() -> HTMLResponse:
+    def dashboard(request: Request) -> HTMLResponse:
         template = (static_dir / "index.html").read_text(encoding="utf-8")
         html = template.replace("{{CSRF_TOKEN}}", token).replace(
             "{{POLL_MS}}", str(settings.web_poll_seconds * 1000)
         )
+        links = ''.join('<a href="' + html_module.escape(url, quote=True) + '">' + html_module.escape(label) + '</a> '
+                        for label, url in (room_links or []))
+        html = html.replace('{{ROOM_LINKS}}', links).replace('{{ROOM_LABEL}}', html_module.escape(settings.room_label or settings.kindroid_display_name))
+        prefix = request.scope.get('root_path', '')
+        html = html.replace('src="/static/', f'src="{prefix}/static/').replace('href="/static/', f'href="{prefix}/static/')
         return HTMLResponse(html)
 
     @app.get("/health/live", response_model=HealthResponse)
@@ -252,6 +259,13 @@ def create_web_app(
             shared_schedule = daily.snapshot()
             if shared_schedule['configured']:
                 relay_status['initiative_due_at'] = shared_schedule['next_due_at']
+            from ..encounters import Encounters
+            encounters = Encounters(state, settings)
+            if settings.room_mode == 'shared':
+                relay_status['initiative_due_at'] = state.get_int('shared_due_at') or None
+            elif encounters.controls_schedule():
+                choice = encounters.current()
+                relay_status['initiative_due_at'] = choice['due_at'] if choice['status'] in {'pending', 'queued'} else None
             worker = state.worker_status.get()
             active = (
                 state.commands.get(worker.active_command_id)
@@ -329,8 +343,9 @@ def create_web_app(
         participant = "unknown"
         if known:
             participant = "codex"
-        elif row["sender_type"] == "ai" and name.casefold() == settings.kindroid_display_name.casefold():
-            participant = "hannah"
+        elif row["sender_type"] == "ai" and (name.casefold() == settings.kindroid_display_name.casefold()
+                or any(name.casefold() == p[1].casefold() for p in settings.participants)):
+            participant = "hannah" if name.casefold() == 'hannah' else 'companion'
         elif row["sender_type"] == "user" and name.casefold() == settings.restore_persona_name.casefold():
             participant = "marc"
         return MessageResponse(
@@ -597,6 +612,41 @@ def create_web_app(
         from ..schedule import DailyScheduler
         with state_factory.connect() as state:
             return DailyScheduler(state, settings).snapshot()
+
+    @app.get('/api/v1/encounters')
+    def encounters_status():
+        from ..encounters import Encounters
+        from ..shared_recovery import recovery_status
+        import json
+        with state_factory.connect() as state:
+            row = state.connection.execute('SELECT * FROM shared_sessions ORDER BY rowid DESC LIMIT 1').fetchone()
+            return {**Encounters(state, settings).snapshot(), 'mode': settings.room_mode,
+                    'session': dict(row) if row else None, 'next_shared_at': state.get_int('shared_due_at'),
+                    'recovery': recovery_status(state, settings),
+                    'shared_config': json.loads(state.get_meta('shared_config') or json.dumps({
+                        'enabled': True, 'daily_time': f'{settings.shared_hour:02}:{settings.shared_minute:02}'}))}
+
+    @app.post('/api/v1/settings/shared-session', response_model=CommandResponse, status_code=202)
+    def set_shared_schedule(body: MemorySubmission):
+        if settings.room_mode != 'shared':
+            raise HTTPException(409, 'This is not a shared room')
+        return enqueue(CommandType.SET_SHARED_SCHEDULE, body, body.payload)
+
+    @app.post('/api/v1/settings/encounter', response_model=CommandResponse, status_code=202)
+    def set_encounter(body: MemorySubmission):
+        if not settings.participant_scheduling:
+            raise HTTPException(409, 'Participant scheduling is not enabled for this room')
+        return enqueue(CommandType.SET_ENCOUNTER, body, body.payload)
+
+    @app.post('/api/v1/commands/end-session', response_model=CommandResponse, status_code=202)
+    def end_session(body: CommandSubmission):
+        return enqueue(CommandType.END_SESSION, body)
+
+    @app.post('/api/v1/commands/recover-shared', response_model=CommandResponse, status_code=202)
+    def recover_shared_session(body: MemorySubmission):
+        if settings.room_mode != 'shared':
+            raise HTTPException(409, 'This is not a shared room')
+        return enqueue(CommandType.RECOVER_SHARED, body, body.payload)
 
     @app.post("/api/v1/settings/schedule", response_model=CommandResponse, status_code=202)
     def set_schedule(body: MemorySubmission) -> CommandResponse:

@@ -31,7 +31,7 @@ def test_upgrade_and_restart_keep_evidence_and_corrections(tmp_path):
     db = open_database(path)
     apply_migrations(db, MIGRATIONS[:3])
     db.close()
-    assert migrate_database(path) == [4, 5, 6, 7, 8, 9, 10, 11]
+    assert migrate_database(path) == [4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     with RelayState(path) as state:
         memory = MemoryStore(state.connection, 'g1')
         data = seed(state)

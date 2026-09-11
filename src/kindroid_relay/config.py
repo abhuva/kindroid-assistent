@@ -151,6 +151,20 @@ class Settings:
     curiosity_max_attempts_24h: int = 2
     curiosity_max_interpretations_24h: int = 4
     curiosity_window_seconds: int = 180
+    rooms_file: str = ""
+    room_key: str = "primary"
+    room_label: str = ""
+    room_mode: str = "assistant"
+    participants: tuple[tuple[str, str], ...] = ()
+    participant_scheduling: bool = False
+    account_state_path: Path | None = None
+    cooperative_turns: bool = False
+    shared_hour: int = 18
+    shared_minute: int = 0
+    shared_check_every: int = 6
+    shared_max_messages: int = 60
+    shared_max_seconds: int = 3600
+    shared_turn_seconds: int = 30
 
     @classmethod
     def load(cls, env_file: str | Path = "kindroid.env") -> "Settings":
@@ -336,6 +350,8 @@ class Settings:
             memory_model_revision=values.get("RELAY_MEMORY_MODEL_REVISION", "operator-local-v1").strip(),
             memory_extractor=memory_extractor,
             memory_extraction_timeout_seconds=memory_timeout,
+            rooms_file=values.get("RELAY_ROOMS_FILE", "").strip(),
+            participant_scheduling=_boolean(values, "RELAY_PARTICIPANT_SCHEDULING", False),
         )
 
     def ensure_runtime_directories(self) -> None:

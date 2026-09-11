@@ -60,6 +60,8 @@ COMMON_DETAIL_FIELDS = frozenset(
 
 ACTIVITY_KINDS = frozenset(
     {
+        'shared_check_requested', 'shared_check_decided',
+        'encounter_choice', 'shared_session_ended', 'shared_context_changed', 'shared_session_recovered', 'room_work_failed',
         'discovery_changed', 'discovery_source', 'experience_updated',
         "schedule_changed",
         "schedule_queued",
@@ -111,6 +113,7 @@ ACTIVITY_KINDS = frozenset(
 
 SAFETY_CRITICAL_ACTIVITY_KINDS = frozenset(
     {
+        'encounter_choice', 'shared_session_ended', 'shared_context_changed', 'shared_session_recovered', 'room_work_failed',
         'discovery_changed', 'experience_updated',
         "schedule_changed",
         "relay_paused",

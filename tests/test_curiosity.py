@@ -308,7 +308,7 @@ def test_review_reservations_expire_without_manual_closure(tmp_path, monkeypatch
 def test_migration_and_read_only_api_do_not_enable_scheduler(tmp_path):
     path = tmp_path / 'old.db'
     db = open_database(path); apply_migrations(db, MIGRATIONS[:8]); db.close()
-    assert migrate_database(path) == [9, 10, 11]
+    assert migrate_database(path) == [9, 10, 11, 12, 13]
     config, factory, _, client = dashboard(tmp_path)
     before = client.get('/api/v1/exploration').json()['curiosity']
     assert before['enabled'] is False and before['next_due_at'] is None

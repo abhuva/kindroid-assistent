@@ -13,6 +13,12 @@ from .config import DASHBOARD_INITIATIVE_LIMIT_MAX
 
 
 class CommandType(str, Enum):
+    RECOVER_SHARED = 'recover_shared'
+    CHOSEN_ENCOUNTER = 'chosen_encounter'
+    SET_ENCOUNTER = 'set_encounter'
+    END_SESSION = 'end_session'
+    START_SHARED = 'start_shared'
+    SET_SHARED_SCHEDULE = 'set_shared_schedule'
     SET_DISCOVERY = 'set_discovery'
     APPROVE_PUBLIC_TOPIC = 'approve_public_topic'
     START_CONVERSATION = "start_conversation"
@@ -74,6 +80,9 @@ LEGAL_TRANSITIONS: dict[CommandStatus, frozenset[CommandStatus]] = {
 
 SIDE_EFFECTING_COMMANDS = frozenset(
     {
+        CommandType.RECOVER_SHARED,
+        CommandType.CHOSEN_ENCOUNTER,
+        CommandType.START_SHARED,
         CommandType.SCHEDULED_CHECK_IN,
         CommandType.SCHEDULED_EXPLORATION,
         CommandType.INTERPRET_EXPLORATION,
@@ -86,6 +95,7 @@ SIDE_EFFECTING_COMMANDS = frozenset(
 
 SINGLE_ACTIVE_COMMANDS = frozenset(
     {
+        CommandType.RECOVER_SHARED,
         CommandType.SYNC_HISTORY,
         CommandType.SCHEDULED_CHECK_IN,
         CommandType.SET_SCHEDULE,
@@ -126,6 +136,28 @@ def validate_payload(
     payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
     value = dict(payload or {})
+    if command_type == CommandType.RECOVER_SHARED:
+        if (set(value) != {'session_id', 'turn_id', 'confirm'} or value['confirm'] is not True
+                or any(not isinstance(value[k], str) or not 1 <= len(value[k]) <= 128
+                       or any(ord(c) < 32 for c in value[k]) for k in ('session_id', 'turn_id'))):
+            raise CommandValidationError('Recovery requires the selected session, generation and explicit confirmation')
+        return value
+    if command_type == CommandType.START_SHARED:
+        if set(value) != {'scheduled_at'} or type(value['scheduled_at']) is not int or value['scheduled_at'] < 0:
+            raise CommandValidationError('A daily shared start requires its scheduled timestamp')
+        return value
+    if command_type == CommandType.SET_SHARED_SCHEDULE:
+        from .shared import validate_shared_config
+        try:
+            return validate_shared_config(value)
+        except ValueError as exc:
+            raise CommandValidationError(str(exc)) from exc
+    if command_type == CommandType.SET_ENCOUNTER:
+        if set(value) != {'due_at'} or (value['due_at'] is not None and type(value['due_at']) is not int):
+            raise CommandValidationError('Encounter requires due_at as an integer timestamp or null')
+        if value['due_at'] is not None and not 0 <= value['due_at'] <= 253402300799:
+            raise CommandValidationError('Encounter time is outside the supported range')
+        return value
     if command_type == CommandType.SET_DISCOVERY:
         from .discovery import validate_discovery
         try:
@@ -184,6 +216,8 @@ def validate_payload(
             raise CommandValidationError(f"initiative limit must be an integer from 1 to {DASHBOARD_INITIATIVE_LIMIT_MAX}")
         return {"limit": limit}
     if command_type in {
+        CommandType.CHOSEN_ENCOUNTER,
+        CommandType.END_SESSION,
         CommandType.SYNC_HISTORY,
         CommandType.SCHEDULED_CHECK_IN,
         CommandType.SCHEDULED_EXPLORATION,

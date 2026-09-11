@@ -15,6 +15,7 @@
   <script src="/static/garden.js" defer></script>
   <script src="/static/schedule.js" defer></script>
   <script src="/static/discovery.js" defer></script>
+  <script src="/static/encounters.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#controls-heading">Skip to controls</a>
@@ -26,12 +27,36 @@
       </div>
       <div id="connection" class="badge neutral" role="status">Connecting…</div>
     </header>
-
     <div class="tabbar" role="tablist" aria-label="Dashboard views">
       <button id="tab-info" type="button" role="tab" aria-selected="true" aria-controls="view-info" tabindex="0">Info</button>
       <button id="tab-operations" type="button" role="tab" aria-selected="false" aria-controls="view-operations" tabindex="-1">Operations</button>
       <button id="tab-schedule" type="button" role="tab" aria-selected="false" aria-controls="view-schedule" tabindex="-1">Schedule</button>
     </div>
+    <nav aria-label="Conversation rooms">{{ROOM_LINKS}}</nav>
+    <section class="panel" aria-labelledby="encounter-heading">
+      <h2 id="encounter-heading">{{ROOM_LABEL}} · Next encounter</h2>
+      <p id="encounter-status" role="status">Loading encounter preferences…</p>
+      <div id="encounter-controls" hidden>
+        <label for="encounter-time">Next encounter (your local time)</label>
+        <input id="encounter-time" type="datetime-local">
+        <button type="button" id="encounter-save">Set next encounter</button>
+        <button type="button" id="encounter-cancel">No automatic next encounter</button>
+      </div>
+      <button type="button" id="session-end" hidden>End session</button>
+      <div id="session-recovery" hidden>
+        <p id="session-recovery-note">Recovery affects the relay session, not the Kindroid group.</p>
+        <button type="button" id="session-recover" class="danger" aria-describedby="session-recovery-note" disabled>Recover interrupted relay session</button>
+      </div>
+      <fieldset id="shared-schedule-controls" hidden>
+        <legend>Daily companion session</legend>
+        <label for="shared-enabled"><input id="shared-enabled" type="checkbox"> Enable daily session</label>
+        <label for="shared-time">Start time (relay host local time)</label>
+        <input id="shared-time" type="time" value="18:00">
+        <button type="button" id="shared-save">Save daily session</button>
+      </fieldset>
+      <p id="encounter-result" role="status"></p>
+      <button type="button" id="encounter-retry" hidden>Retry same encounter request</button>
+    </section>
 
     <div id="view-info" role="tabpanel" aria-labelledby="tab-info" tabindex="0">
     <section class="panel status-panel" aria-labelledby="status-heading">

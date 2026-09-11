@@ -66,12 +66,27 @@ def validate_decision(value: Any, source: dict[str, Any], candidates: list[dict[
 
 class ResponseInterpreter:
     def __init__(self, settings: Any):
+        from .encounters import NEXT_CHOICE_SCHEMA
+        self.settings = settings
+        schema = SCHEMA
+        instructions = INSTRUCTIONS
+        if settings.participant_scheduling:
+            schema = _object({**SCHEMA['properties'], 'next_encounter': NEXT_CHOICE_SCHEMA})
+            instructions += ('\nAlso extract an explicit choice of next encounter timing from this speaker only. '
+                'Return next_encounter null unless explicit; kind after uses integer delay_seconds, kind at '
+                'uses ISO time with timezone, kind none declines future encounters. Unused fields are null. '
+                'Include verbatim evidence from this response. This governs both check-ins and exploration, '
+                'not a promise to perform an action. Do not infer timing from hypothetical or quoted text.')
         self.runner = CodexExtractionRunner(settings.codex_model, settings.memory_extraction_timeout_seconds,
-                                            instructions=INSTRUCTIONS, schema=SCHEMA)
+                                            instructions=instructions, schema=schema)
 
     def interpret(self, source: dict[str, Any], candidates: list[dict[str, Any]], context: dict[str, Any]) -> dict[str, Any]:
         envelope = {'response': {k: source[k] for k in ('remote_id', 'sender', 'display_name', 'body')},
                     'offered_candidates': candidates, 'context_only': context}
+        if self.settings.participant_scheduling:
+            from datetime import datetime
+            envelope['local_time'] = datetime.now().astimezone().isoformat()
+            envelope['source_timestamp'] = source['timestamp']
         if len(json.dumps(envelope, ensure_ascii=False)) > 18000:
             raise ValueError('response context exceeds interpretation budget')
         return self.runner.run(envelope)
@@ -97,7 +112,8 @@ class ResponseStore:
                 (session_id, self.group, command_id, VERSION, int(time.time())))
             request = self.db.execute('SELECT command_type FROM commands WHERE id=?', (command_id,)).fetchone()
             scheduled = request is not None and request['command_type'] == 'scheduled_exploration'
-            self.agency.event('response_flow_enabled', session_id, Actor.SYSTEM if scheduled else Actor.MARC,
+            chosen = self.db.execute('SELECT 1 FROM encounter_explorations WHERE command_id=?', (command_id,)).fetchone()
+            self.agency.event('response_flow_enabled', session_id, Actor.SYSTEM if scheduled or chosen else Actor.MARC,
                               Origin.CANDIDATE if scheduled else Origin.USER,
                               'response_flow_enabled', command_id=command_id, details={'version': VERSION})
 
@@ -228,7 +244,7 @@ class ExplorationResponses:
         if source is None or not source['kindroid_id']:
             return False
         if not store.trusted_speaker(source, row['session_id']):
-            store.set_status(row, 'needs_review', 'Speaker attribution is not confirmed Hannah; no follow-up sent')
+            store.set_status(row, 'needs_review', 'Companion speaker attribution is not confirmed; no follow-up sent')
             return True
         if len(source['body']) > 8000:
             store.set_status(row, 'needs_review', 'Response exceeds interpretation budget; not truncated')
@@ -251,7 +267,17 @@ class ExplorationResponses:
                     context = {'earlier_response': store.source(primary)['body'][:2000], 'clarification': 'Which offered option, another topic, or leave it for now?'}
                 with app.phase_context(WorkerPhase.RUNNING_CODEX, 'Interpreting exploration response (no tools)'):
                     raw = self.interpreter.interpret(source, candidates, context)
+                choice = raw.pop('next_encounter', None) if isinstance(raw, dict) and app.settings.participant_scheduling else None
                 decision = validate_decision(raw, source, candidates)
+                if choice is not None:
+                    from .encounters import Encounters
+                    try:
+                        receipt = Encounters(app.state, app.settings).choose(app.state.turns.message(source['remote_id']), choice)
+                    except (ValueError, TypeError, OverflowError):
+                        pass  # Keep valid exploration evidence; ask timing again at the end.
+                    else:
+                        app.state.set_meta('encounter_choice_received', 1)
+                        app.state.set_meta('encounter_exploration_receipt', receipt)
                 model = getattr(getattr(self.interpreter, 'runner', None), 'last_model', 'runtime_default')
                 if not isinstance(model, str) or len(model) > 128:
                     raise ValueError('invalid model metadata')

@@ -88,6 +88,12 @@ scheduling, resource allocation, or goal selection.
 
 ## Roles and ownership
 
+**2026-09-10 extension:** Miko is a separate companion principal in her own room
+and in the shared Hannah/Miko room. Each companion's timing choice governs their
+own private encounters; neither speaks for the other. Codex stays in the background
+of shared sessions and does not narrate or moderate. Codex context remains isolated
+between rooms; Kindroid retains ownership of companion memory. See ADR-020.
+
 ### Hannah: semantic principal
 
 Hannah is the conversational identity. She is the intended source of final choices

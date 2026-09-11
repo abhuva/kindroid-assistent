@@ -5,6 +5,11 @@
 
 ## How to use this plan
 
+The 2026-09-10 room/session and participant-scheduling extension has its own
+[implementation checklist](multi-room-implementation-plan.md), agreed with Marc.
+It supersedes independent social/exploration timing only where explicitly enabled;
+older milestone release acceptance below remains separately tracked.
+
 Every implementation task and subtask uses checklist syntax. Task IDs provide
 stable dependency references. A task may start only when its stated dependencies
 are complete unless the exception is documented in the task or pull request.

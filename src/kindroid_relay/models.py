@@ -40,6 +40,8 @@ class AgentReply:
     reply: str
     request_kindroid_reply: bool
     action: ActionProposal | None = None
+    next_encounter: dict[str, Any] | None = None
+    explore: bool = False
 
 
 @dataclass(frozen=True, slots=True)

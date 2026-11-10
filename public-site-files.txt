@@ -1,0 +1,12 @@
+.gitignore
+.github/workflows/research-site.yml
+zensical.toml
+requirements-docs.txt
+public-site-files.txt
+PUBLICATION.md
+Preview Research Notes.bat
+New Research Note.bat
+scripts/research-site.ps1
+scripts/check-public-site.py
+scripts/test-public-site.py
+scripts/serve-public-site.py

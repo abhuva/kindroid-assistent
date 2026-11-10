@@ -1,0 +1,53 @@
+name: Public research notes
+
+on:
+  push:
+    branches: [docs-site]
+  pull_request:
+    branches: [docs-site]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Check publication boundary
+        run: |
+          python scripts/test-public-site.py
+          python scripts/check-public-site.py --publication-tree
+      - name: Install pinned documentation dependencies
+        run: python -m pip --isolated install --index-url https://pypi.org/simple -r requirements-docs.txt
+      - name: Build only curated public pages
+        run: zensical build --clean --strict
+      - name: Check rendered pages and search index
+        run: python scripts/check-public-site.py --built --publication-tree
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/docs-site'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
+        id: deployment

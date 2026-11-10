@@ -1,0 +1,41 @@
+[project]
+site_name = "Kindroid Lab Notes"
+site_description = "A working journal about local conversational archive analysis, methods, experiments and their limits."
+site_url = "https://abhuva.github.io/kindroid-assistent/"
+site_author = "abhuva"
+repo_url = "https://github.com/abhuva/kindroid-assistent"
+repo_name = "abhuva/kindroid-assistent"
+edit_uri = "edit/docs-site/public-docs/"
+docs_dir = "public-docs"
+site_dir = "site"
+dev_addr = "127.0.0.1:8008"
+nav = [
+  { "Home" = "index.md" },
+  { "Journal" = [
+    "journal/index.md",
+    "journal/2026-11-10-vulkan-decisions.md",
+    "journal/2026-11-10-speaker-boundaries.md",
+  ] },
+  { "Methods" = ["methods/index.md", "methods/questions-and-patterns.md"] },
+  { "About" = ["about.md", "publication-policy.md"] },
+]
+extra_css = ["assets/journal.css"]
+
+[project.theme]
+language = "en"
+font = false
+features = ["navigation.tabs", "navigation.sections", "navigation.top", "content.code.copy", "content.action.edit", "search.highlight"]
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "teal"
+accent = "amber"
+toggle.icon = "material/weather-night"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "teal"
+accent = "amber"
+toggle.icon = "material/weather-sunny"
+toggle.name = "Switch to light mode"

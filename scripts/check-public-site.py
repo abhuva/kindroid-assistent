@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -17,6 +20,9 @@ LINK = re.compile(r'!?\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)')
 
 class PublicationError(ValueError):
     pass
+
+
+DEPLOY_TOOLS = {'.github/workflows/research-site.yml', 'scripts/check-public-site.py'}
 
 
 def inside(root, path):
@@ -39,7 +45,7 @@ def public_files(root):
         # The explicit tooling list cannot be used to include raw data or secrets.
         if name not in {'zensical.toml','requirements-docs.txt','public-site-files.txt','PUBLICATION.md','.gitignore',
                         'Preview Research Notes.bat','New Research Note.bat','.github/workflows/research-site.yml',
-                        'scripts/research-site.ps1','scripts/check-public-site.py','scripts/test-public-site.py','scripts/serve-public-site.py'}:
+                        'scripts/research-site.ps1','scripts/check-public-site.py','scripts/test-public-site.py','scripts/serve-public-site.py','scripts/check-documentation.py'}:
             raise PublicationError('Unexpected file in publication manifest')
         inside(root, root/name)
         if not (root/name).is_file(): raise PublicationError('Missing publication source: '+name)
@@ -59,7 +65,7 @@ def public_files(root):
     return names
 
 
-def check_sources(root, publication_tree=False):
+def check_sources(root):
     root = Path(root).resolve()
     names = public_files(root)
     config = tomllib.loads((root/'zensical.toml').read_text('utf-8-sig'))['project']
@@ -68,6 +74,8 @@ def check_sources(root, publication_tree=False):
     allowed = {'site_name','site_description','site_url','site_author','repo_url','repo_name','edit_uri','docs_dir','site_dir','dev_addr','nav','extra_css','theme'}
     if set(config) - allowed or config.get('theme', {}).get('font') is not False:
         raise PublicationError('Unreviewed build extensions or remote fonts are forbidden')
+    if config.get('edit_uri') or 'content.action.edit' in config.get('theme', {}).get('features', []):
+        raise PublicationError('Author pages locally; deployment must not expose a second editing location')
     for name in names:
         data = (root/name).read_text('utf-8-sig')
         if SECRET.search(data): raise PublicationError('Credential-like content rejected: '+name)
@@ -85,10 +93,6 @@ def check_sources(root, publication_tree=False):
                     path = (root/name).parent/parsed.path
                     inside(root/'public-docs', path)
                     if not path.exists(): raise PublicationError('Broken publication link: '+name)
-    if publication_tree:
-        tracked = subprocess.run(['git','ls-files','-z'],cwd=root,check=True,capture_output=True).stdout.decode().split('\0')
-        if set(filter(None,tracked)) != set(names):
-            raise PublicationError('Publication branch must contain exactly the reviewed file set')
     return names
 
 
@@ -113,15 +117,96 @@ def check_built(root):
     return count
 
 
+def source_digest(root):
+    root = Path(root).resolve()
+    digest = hashlib.sha256()
+    for name in sorted(check_sources(root)):
+        digest.update(name.encode() + b'\0' + (root/name).read_bytes() + b'\0')
+    return digest.hexdigest()
+
+
+def stage_deployment(root, destination):
+    """Export generated output only, into a checked isolated publication checkout."""
+    root, destination = Path(root).resolve(), Path(destination).resolve()
+    allowed = root/'var/research-site'
+    if not destination.is_relative_to(allowed) or not destination.name.startswith('publish-'):
+        raise PublicationError('Deployment staging must stay in an isolated publication checkout')
+    digest = source_digest(root)
+    marker = allowed/'build-source.sha256'
+    if not marker.is_file() or marker.read_text('ascii').strip() != digest:
+        raise PublicationError('Authoring sources changed since the checked build; build again')
+    check_built(root)
+    destination.mkdir(parents=True, exist_ok=True)
+    names = sorted(p.relative_to(root).as_posix() for p in (root/'site').rglob('*') if p.is_file())
+    names += sorted(DEPLOY_TOOLS)
+    files = {}
+    for name in names:
+        source, target = root/name, destination/name
+        inside(root, source); inside(destination, target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        files[name] = hashlib.sha256(target.read_bytes()).hexdigest()
+    revision = subprocess.run(['git','rev-parse','HEAD'],cwd=root,capture_output=True,text=True)
+    source_revision = revision.stdout.strip() if revision.returncode == 0 else 'working-tree'
+    manifest = {'version':1,'authoring':'public-docs/ in the authoring repository',
+                'source_revision':source_revision,'source_sha256':digest,'files':files}
+    (destination/'deployment.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+    check_deployment(destination)
+    return [*names, 'deployment.json']
+
+
+def check_deployment(root, tracked=False):
+    root = Path(root).resolve()
+    manifest_path = root/'deployment.json'; inside(root, manifest_path)
+    data = json.loads(manifest_path.read_text('utf-8'))
+    if not isinstance(data,dict):
+        raise PublicationError('Invalid generated deployment manifest')
+    files = data.get('files')
+    if data.get('version') != 1 or not isinstance(files,dict) or not DEPLOY_TOOLS <= files.keys():
+        raise PublicationError('Invalid generated deployment manifest')
+    if not re.fullmatch('[a-f0-9]{64}',str(data.get('source_sha256',''))):
+        raise PublicationError('Missing authoring source fingerprint')
+    expected = set(files) | {'deployment.json'}
+    if len(expected) > 30000:
+        raise PublicationError('Generated deployment exceeds its file limit')
+    for name, digest in files.items():
+        if not isinstance(name,str) or '\\' in name or Path(name).is_absolute() or '..' in Path(name).parts:
+            raise PublicationError('Unsafe generated deployment path')
+        if name not in DEPLOY_TOOLS and not name.startswith('site/'):
+            raise PublicationError('Authoring sources are forbidden in deployment output')
+        path = root/name; inside(root,path)
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise PublicationError('Generated output changed; rebuild from the authoring repository')
+    if tracked:
+        actual = set(filter(None,subprocess.run(['git','ls-files','-z'],cwd=root,check=True,capture_output=True).stdout.decode().split('\0')))
+    else:
+        actual = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file() and '.git' not in p.relative_to(root).parts}
+    if actual != expected:
+        raise PublicationError('Deployment must contain exactly the checked output and deployment tooling')
+    check_built(root)
+    return len(files)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=Path(__file__).resolve().parent.parent)
     parser.add_argument('--built',action='store_true')
     parser.add_argument('--list',action='store_true')
-    parser.add_argument('--publication-tree',action='store_true')
+    parser.add_argument('--source-digest',action='store_true')
+    parser.add_argument('--stage-deployment',type=Path)
+    parser.add_argument('--deployment-tree',action='store_true')
     args=parser.parse_args()
     try:
-        names=check_sources(args.root,args.publication_tree)
+        if args.deployment_tree:
+            print(f'Generated deployment check passed: {check_deployment(args.root,tracked=True)} files')
+            return
+        if args.stage_deployment:
+            print('\n'.join(stage_deployment(args.root,args.stage_deployment)))
+            return
+        if args.source_digest:
+            print(source_digest(args.root))
+            return
+        names=check_sources(args.root)
         if args.built: print(f'Generated artifact check passed: {check_built(args.root)} files')
         if args.list: print('\n'.join(names))
         else: print(f'Public source check passed: {len(names)} reviewed files')

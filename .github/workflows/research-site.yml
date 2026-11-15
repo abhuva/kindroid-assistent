@@ -1,4 +1,4 @@
-name: Public research notes
+name: Documentation deployment output
 
 on:
   push:
@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -23,23 +23,15 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
-      - name: Check publication boundary
-        run: |
-          python scripts/test-public-site.py
-          python scripts/check-public-site.py --publication-tree
-      - name: Install pinned documentation dependencies
-        run: python -m pip --isolated install --index-url https://pypi.org/simple -r requirements-docs.txt
-      - name: Build only curated public pages
-        run: zensical build --clean --strict
-      - name: Check rendered pages and search index
-        run: python scripts/check-public-site.py --built --publication-tree
+      - name: Verify generated output and authoring fingerprint
+        run: python scripts/check-public-site.py --deployment-tree
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: site
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/docs-site'
-    needs: build
+    needs: validate
     runs-on: ubuntu-latest
     permissions:
       pages: write

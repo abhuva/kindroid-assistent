@@ -11,6 +11,151 @@ design, and the complete implementation checklist are indexed in
 The previous Gemini scheduler and custom MCP bridge are preserved unchanged in
 [`_archive`](./_archive).
 
+## Voice conversation
+
+Double-click **Start Kindroid Voice.bat**. The five panels share a single audio worker.
+The status and **Stop** control stay available when switching panels.
+
+- **Models** starts with Pocket TTS off. **Call** loads the saved chat voice
+  and **Speak text** or **Create MP3** loads the selected test voice. You can preload either voice here.
+  **Ready** means the native process has loaded the weights and voice state. It
+  stays warm between paragraphs and turns. The next **Speak text** applies changes
+  to the test model, voice or temperature. **Turn model off** stops the
+  current voice operation and releases the process. Closing the window also releases it.
+- **Voice cloning → Import audio files…** accepts WAV, MP3, FLAC and Ogg recordings.
+  You can also open the picker from **TTS → Create voice from audio…**. Choose
+  one or more files for the same speaker. The app copies them into
+  `var/pocket-tts/4.0.1/samples/` and checks that batch for cloning. If two
+  recordings share a filename, different audio gets a numbered copy.
+  Select up to eight clips,
+  name the preset, and choose the start offset, total reference duration and default
+  TTS temperature. The encoder divides the duration among the selected clips
+  and processes the reference in small blocks to limit memory use.
+  **Clone and save new preset** stores the recipe and its exported 18M voice state
+  together. Load a saved recipe to adjust it and save another version.
+- **TTS** lets you select the English 18M REFL model with Alba, the original clone
+  or a saved clone. The 7M REFL model includes its own Alba voice. Choose a temperature,
+  enter text and click **Speak text**. The **Playback** controls adjust speed
+  from 0.80× to 1.20× in 0.01× steps while preserving pitch. Bass, Mid and Treble
+  adjust up to 12 dB in either direction. These sliders work during playback.
+  The output meter shows RMS and held peak in dBFS after EQ. **Mute playback**
+  applies at the next test or call. **Use these settings for Kindroid chat**
+  saves the voice, speed, EQ and mute defaults across launches. Chat initially
+  uses the existing Hannah clone.
+  **Create MP3** renders the text with the selected voice, speed and EQ, even
+  when playback is muted. It saves a timestamped file in Windows’ Downloads
+  folder and shows the path when complete. **Stop** cancels the export.
+- **STT → Recognizer** offers Parakeet multilingual, Parakeet German and
+  **Fluid Speech Pro** (FluidVoice’s int8 ONNX model). The test controls open with
+  the saved chat STT settings or the Parakeet multilingual defaults.
+  To preselect Fluid in the STT controls, run
+  `scripts/voice-chat.ps1 -Model fluid-speech-pro`.
+  Click **Record a phrase** and wait for the microphone level to appear. In **Finish after a pause**,
+  the first 100 ms block at or above the speech threshold starts recording. Each
+  block of speech resets the pause timer. Set **Pause to finish** from 0.1 to 10.0 s
+  (test default 4.0 s). **Pause to transcribe a chunk** defaults to 1.0 s.
+  **Pause for a new paragraph** defaults to 2.0 s. When speech resumes after
+  that pause, the next words appear after a blank line. A short pause queues the preceding speech for local transcription. The text
+  appears while the microphone stays open. Set the chunk pause shorter than
+  the finish pause to see text before the take ends. Finishing also transcribes
+  any remaining speech. **Speech threshold** defaults to −50 dBFS. Lower it for a quiet voice or raise it
+  above the displayed room level if background noise triggers recording.
+  **Finish manually** records from microphone opening through **Finish and transcribe**.
+  STT tests can run past one minute. Uninterrupted speech is decoded in blocks
+  of up to eight seconds. Processed microphone audio is released as the test runs.
+  In **Conversation on / off**, click **Start listening** and say **conversation on**
+  to open a conversation. You can edit the comma-separated start phrases.
+  **Wait after conversation on** gives you 0.1 to 60 seconds (default 4.0)
+  after the panel confirms a standalone start command. If you speak in the
+  same sentence, **Pause to finish** applies to that speech. Each finish pause
+  completes one turn in the log. Speak again to start the next turn directly.
+  **Conversation off** closes the conversation, keeps its text and returns
+  to the rolling standby listener. Say **conversation on** to open another
+  conversation on the same microphone. **Stop** releases the microphone.
+  Local transcription checks whole words regardless
+  of capitalization. **Listening threshold** defaults to −60 dBFS while waiting
+  for a start phrase. After detection, **Speech threshold** governs the addressed take.
+  The log marks the two latest idle chunks **[Listening]**. When a start phrase matches,
+  that visible context and the entire matching phrase become part of the take,
+  including the command as transcribed. A finish pause without a match clears the
+  temporary words. The chunk and paragraph pauses also apply here.
+  **Compare conversation detectors** listens for **conversation on** with two local detectors.
+  The acoustic detector hears
+  the audio directly, including audio below the listening threshold. The selected recognizer
+  checks the editable spellings in each transcript. Either match starts a take.
+  After each finish pause the panel shows the matched words and running counts for
+  both, acoustic only, transcript only and neither. **Acoustic match threshold**
+  starts at 0.25. Lower it for missed starts or raise it for unwanted activations.
+  In both listener modes, **conversation off** takes effect when a chunk is transcribed.
+  In every STT mode the green, amber and red meter segments show the current
+  100 ms RMS level in dBFS. The white line holds the loudest sample peak for
+  1.5 seconds, then falls independently. Compare the RMS bars with the listening
+  and speech thresholds when tuning your microphone.
+  The **Stop** button discards the current unfinished take,
+  including its partial text, and preserves earlier completed transcripts.
+  A recording or decoding error keeps the text already shown. The final
+  summary reports the word count for the take and flags chunks that returned no text.
+  **Clear log** clears the displayed transcript. During a take, recording
+  continues and newly transcribed chunks appear in the empty log.
+  Compare models and CPU thread counts using the recorded duration and decode
+  time shown after each test. Changing the model or thread count reloads it.
+  **Use these settings for Kindroid chat** saves the recognizer, thread count,
+  speech threshold and three pause timings across launches. During a call,
+  saved changes take effect on the next microphone turn.
+- **Kindroid chat** opens on launch and makes one history request starting
+  24 hours back. It shows the newest 10 displayable messages from the returned
+  page in conversation order. Kindroid returns up to 100 records, oldest first.
+  The tab flags when newer messages are outside that page. Hannah appears on
+  the left and Marc on the right. Yellow **TK** marks
+  Kindroid text, violet **VK** marks Kindroid voice calls, and green **API** marks
+  API text. A gray **?** means the history record did not identify its source.
+  Click **Call** and start speaking when the status shows **Listening**. The app
+  prepares the selected recognizer and the saved Pocket TTS voice before opening the microphone
+  and keeps them loaded between turns. The microphone uses pause-based dictation
+  with no wake phrase. Your bubble fills in as chunks arrive. The finish pause
+  (4 seconds by default) closes the microphone and sends the completed turn once.
+  Hannah’s response appears as it arrives. Complete sentences and lines go straight
+  to synthesis. The chat has its own live speed and EQ sliders and output meter.
+  Direct chat adjustments last for the current window. Muted calls display replies
+  silently. The microphone opens for your next turn after any playback finishes.
+  **Stop** ends the call. If a send was interrupted, check the Kindroid chat
+  before repeating the message.
+
+The TTS test plays blank-line paragraphs. Both modes keep one output stream open
+and render the next segment during playback. **Stop** discards pending audio.
+
+Chat reads `KINDROID_AI_ID` and `KINDROID_API_KEY` from the git-ignored `.env` beside
+the launcher for startup history and when you start a call. The other four panels work offline.
+
+### Local voice files and recovery
+
+Keep the following directories with this checkout when moving or backing up the app.
+They are ignored by Git and must be included separately in a private backup.
+
+| Repository path | Contents |
+|---|---|
+| `var/voice/runtime/` | Isolated Windows Python interpreter, standard library and voice dependencies |
+| `var/voice/dictate/` | Dictate adapter, license, registry and installed recognizers |
+| `var/voice/dictate/models/fluid-speech-pro/` | Fluid Speech Pro ONNX weights. Run `scripts/setup-fluid-speech-pro.ps1` to restore them. |
+| `var/voice/kws/` | English sherpa-onnx keyword model. Run `scripts/setup-voice-kws.ps1` to restore it. |
+| `var/pocket-tts/4.0.1/` | Pocket TTS executable, tokenizer, model weights, Alba voices and original `custom.safetensors` |
+| `var/pocket-tts/4.0.1/samples/` | Source recordings imported through the Voice cloning or TTS panel. |
+| `var/pocket-tts/4.0.1/presets/` | Each saved clone’s recipe and final `voice.safetensors`, keyed by an immutable ID |
+| `var/voice/chat-stt.json` | Recognizer and dictation settings explicitly saved for chat |
+| `var/pocket-tts/4.0.1/chat-voice.json` | Saved chat voice, synthesis settings and playback defaults |
+
+Restore these folders under the same relative paths on a compatible Windows machine.
+The app uses Windows audio for microphone capture and speaker playback.
+`scripts/setup-pocket-tts.ps1` can restore the public Pocket TTS assets. To reinstall
+the verified gated weights, pass `-CloningWeights` with the local path to the original
+model file. This checkout keeps that download in `var/voice/installation-source/`.
+
+The playback helper `voice-engine.exe` and the voice encoder `voice-clone.exe`
+are included in the local Pocket TTS folder. To rebuild them, run
+`scripts/build-voice-engine.ps1` on Windows x64 with Rust MSVC,
+Visual Studio C++ build tools and CMake. The build uses the pinned upstream release
+and its locked Rust dependencies. Running the installed helper works offline.
+
 ## Setup
 
 **Background chat monitoring is off in all rooms.** Each room synchronizes history

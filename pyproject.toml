@@ -26,6 +26,7 @@ kindroid-relay = "kindroid_relay.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+kindroid_voice = ["speech.ps1", "conversation-keywords.txt", "fluid-speech-pro.json"]
 kindroid_relay = ["web/static/*"]
 
 [tool.pytest.ini_options]

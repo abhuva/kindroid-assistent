@@ -1,0 +1,44 @@
+{
+  "source": "https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx",
+  "revision": "fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581",
+  "license": "CC-BY-4.0",
+  "files": [
+    {
+      "name": "encoder.int8.onnx",
+      "upstream": "encoder-model.int8.onnx",
+      "bytes": 955592,
+      "sha256": "07ad77459bd3bb165c2c53e978ed1dfd64c6e129b18af2ec5ee38343be1d4451"
+    },
+    {
+      "name": "encoder-model.int8.onnx.data",
+      "bytes": 745971712,
+      "sha256": "d2f8bfbb1fa399f207cde85aa3fabee0d67f6730cb31cbf31832c10de69f9c3c"
+    },
+    {
+      "name": "decoder.int8.onnx",
+      "bytes": 4797,
+      "sha256": "0bd3e225124a8a90373e500f62516270fd85fdf42237aa569489b232d21cac08"
+    },
+    {
+      "name": "decoder.int8.onnx.data",
+      "bytes": 47251456,
+      "sha256": "632c3cbf59d3e52d2f7f4dda3bf8e28c045f7a3bb3dbef0f44529ba63926efaa"
+    },
+    {
+      "name": "joiner.int8.onnx",
+      "bytes": 2754,
+      "sha256": "c0e995b659ed5e15fc0c38408ee56cd9a03e6d3329f304c32b9d5017c8cdd381"
+    },
+    {
+      "name": "joiner.int8.onnx.data",
+      "bytes": 6564352,
+      "sha256": "7473427ab99417fae8cf7025ba11507cb5dcc223194bae2f79064dde0936d0af"
+    },
+    {
+      "name": "tokens.txt",
+      "upstream": "vocab.txt",
+      "bytes": 93939,
+      "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+    }
+  ]
+}
